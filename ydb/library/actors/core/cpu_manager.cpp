@@ -47,8 +47,13 @@ namespace NActors {
     }
 
     void TCpuManager::PrepareStart(TVector<NSchedulerQueue::TReader*>& scheduleReaders, TActorSystem* actorSystem) {
+        NSchedulerQueue::TReader* readers;
+        ui32 readersCount = 0;
+        Shared->Prepare(actorSystem, &readers, &readersCount);
+        for (ui32 i = 0; i != readersCount; ++i, ++readers) {
+            scheduleReaders.push_back(readers);
+        }
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
-            NSchedulerQueue::TReader* readers;
             ui32 readersCount = 0;
             Executors[excIdx]->Prepare(actorSystem, &readers, &readersCount);
             for (ui32 i = 0; i != readersCount; ++i, ++readers) {
@@ -58,6 +63,7 @@ namespace NActors {
     }
 
     void TCpuManager::Start() {
+        Shared->Start();
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
             Executors[excIdx]->Start();
         }
@@ -67,6 +73,7 @@ namespace NActors {
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
             Executors[excIdx]->PrepareStop();
         }
+        Shared->PrepareStop();
     }
 
     void TCpuManager::Shutdown() {
@@ -81,6 +88,8 @@ namespace NActors {
                 }
             }
         }
+        Shared->Shutdown();
+        Shared->Cleanup();
     }
 
     void TCpuManager::Cleanup() {
@@ -93,13 +102,26 @@ namespace NActors {
                 }
             }
         }
+        Shared->Cleanup();
         Executors.Destroy();
+        Shared.reset();
     }
 
     IExecutorPool* TCpuManager::CreateExecutorPool(ui32 poolId) {
         for (TBasicExecutorPoolConfig& cfg : Config.Basic) {
             if (cfg.PoolId == poolId) {
-                return new TBasicExecutorPool(cfg, Harmonizer.get());
+                if (cfg.HasSharedThread) {
+                    cfg.Threads -= 1;
+                    if (cfg.MaxThreadCount) {
+                        cfg.MaxThreadCount -= 1;
+                    }
+                    auto *sharedPool = static_cast<TSharedExecutorPool*>(Shared.get());
+                    auto *pool = new TBasicExecutorPool(cfg, Harmonizer.get());
+                    pool->AddSharedThread(sharedPool->GetSharedThread(poolId));
+                    return pool;
+                } else {
+                    return new TBasicExecutorPool(cfg, Harmonizer.get());
+                }
             }
         }
         for (TIOExecutorPoolConfig& cfg : Config.IO) {

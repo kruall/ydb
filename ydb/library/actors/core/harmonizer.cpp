@@ -581,7 +581,7 @@ void THarmonizer::HarmonizeImpl(ui64 ts) {
             pool.LocalQueueSize = std::min<ui16>(NFeatures::TLocalQueuesFeatureFlags::MIN_LOCAL_QUEUE_SIZE, pool.LocalQueueSize / 2);
             pool.BasicPool->SetLocalQueueSize(pool.LocalQueueSize);
         }
-        if (threadCount > pool.MinThreadCount) {
+        if (threadCount > pool.DefaultThreadCount) {
             AtomicIncrement(pool.DecreasingThreadsByHoggishState);
             LWPROBE(HarmonizeOperation, hoggishPoolIdx, pool.Pool->GetName(), "decrease by hoggish", threadCount - 1, pool.DefaultThreadCount, pool.MaxThreadCount);
             pool.SetThreadCount(threadCount - 1);

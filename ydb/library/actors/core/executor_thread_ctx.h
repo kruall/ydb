@@ -32,6 +32,10 @@ namespace NActors {
     public:
         ui64 StartWakingTs = 0;
 
+        ui64 GetStateInt() {
+            return WaitingFlag.load();
+        }
+
     protected:
         template <typename TWaitState>
         TWaitState GetState() {
@@ -175,6 +179,14 @@ namespace NActors {
         std::atomic<TBasicExecutorPool*> ExecutorPools[MaxPoolsForSharedThreads];
         std::atomic<i64> RequestsForWakeUp = 0;
         ui32 NextPool = 0;
+
+        void SetWork() {
+            this->ExchangeState(TWaitState{EThreadState::Work});
+        }
+
+        void UnsetWork() {
+            this->ExchangeState(TWaitState{EThreadState::None});
+        }
 
         void AfterWakeUp(TWaitState state) {
             NextPool = state.NextPool;
