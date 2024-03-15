@@ -1,8 +1,6 @@
 #pragma once
 
 #include "actorsystem.h"
-#include "executor_thread.h"
-#include "executor_thread_ctx.h"
 #include "scheduler_queue.h"
 #include "executor_pool_base.h"
 #include <ydb/library/actors/actor_type/indexes.h>
@@ -13,6 +11,7 @@
 
 namespace NActors {
     struct TIOExecutorPoolConfig;
+    struct TExecutorThreadCtx;
 
     class TIOExecutorPool: public TExecutorPoolBase {
         TArrayHolder<TExecutorThreadCtx> Threads;

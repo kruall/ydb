@@ -179,4 +179,8 @@ namespace NActors {
             PassAway();
         }
     }
+
+    TActorSystem *TActorCoroImpl::GetActorSystem() const {
+        return GetActorContext().ExecutorThread.ActorSystem;
+    }
 }

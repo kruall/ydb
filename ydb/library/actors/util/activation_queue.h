@@ -2,6 +2,10 @@
 
 #include "defs.h"
 #include "mpmc_ring_queue.h"
+
+#include <ydb/library/actors/core/thread_context.h>
+#include <ydb/library/actors/util/unordered_cache.h>
+
 #include <atomic>
 
 

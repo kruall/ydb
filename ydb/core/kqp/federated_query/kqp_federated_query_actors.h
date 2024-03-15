@@ -3,6 +3,7 @@
 #include <ydb/core/kqp/common/events/script_executions.h>
 
 #include <ydb/library/actors/core/actor.h>
+#include <library/cpp/threading/future/core/future.h>
 
 
 namespace NKikimr::NKqp {

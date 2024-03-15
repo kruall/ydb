@@ -1,6 +1,7 @@
 #pragma once
 #include <ydb/core/tx/columnshard/counters/insert_table.h>
 #include <util/generic/noncopyable.h>
+#include <util/generic/set.h>
 #include "data.h"
 
 namespace NKikimr::NOlap {

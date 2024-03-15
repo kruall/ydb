@@ -2,6 +2,7 @@
 #include "interconnect_common.h"
 #include "events_local.h"
 #include <ydb/library/actors/protos/services_common.pb.h>
+#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/library/actors/core/log.h>
 #include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/library/actors/core/events.h>

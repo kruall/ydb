@@ -2,6 +2,7 @@
 
 #include <ydb/library/actors/core/event_local.h>
 #include <ydb/library/actors/core/events.h>
+#include <library/cpp/threading/future/core/future.h>
 
 #include <util/generic/variant.h>
 

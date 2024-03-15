@@ -858,7 +858,7 @@ class TStateStorageProxy : public TActor<TStateStorageProxy> {
         BoardInfo = msg->BoardConfig;
         SchemeBoardInfo = msg->SchemeBoardConfig;
 
-        RegisterDerivedServices(TlsActivationContext->ExecutorThread.ActorSystem, old.Get());
+        RegisterDerivedServices(TActivationContext::ActorSystem(), old.Get());
     }
 
     void RegisterDerivedServices(TActorSystem *sys, const TStateStorageInfo *old) {

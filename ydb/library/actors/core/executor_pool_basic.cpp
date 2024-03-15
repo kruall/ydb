@@ -2,10 +2,12 @@
 #include "executor_pool_basic_feature_flags.h"
 #include "actor.h"
 #include "config.h"
+#include "executor_thread.h"
 #include "executor_thread_ctx.h"
 #include "probes.h"
 #include "mailbox.h"
 #include "thread_context.h"
+#include "worker_context.h"
 #include <atomic>
 #include <ydb/library/actors/util/affinity.h>
 #include <ydb/library/actors/util/datetime.h>
@@ -394,7 +396,7 @@ namespace NActors {
         ScheduleWriters.Reset(new NSchedulerQueue::TWriter[PoolThreads + 2]);
 
         for (i16 i = 0; i != PoolThreads; ++i) {
-            Threads[i].Thread.Reset(
+            Threads[i].Thread.reset(
                 new TExecutorThread(
                     i,
                     0, // CpuId is not used in BASIC pool

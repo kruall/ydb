@@ -11,6 +11,7 @@
 #include "log.h"
 #include "probes.h"
 #include "ask.h"
+#include "thread_context.h"
 #include <ydb/library/actors/util/affinity.h>
 #include <ydb/library/actors/util/datetime.h>
 #include <util/generic/hash.h>

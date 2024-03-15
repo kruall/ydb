@@ -2,7 +2,6 @@
 
 #include "actorsystem.h"
 #include "config.h"
-#include "executor_thread.h"
 #include "executor_thread_ctx.h"
 #include "executor_pool_basic_feature_flags.h"
 #include "scheduler_queue.h"

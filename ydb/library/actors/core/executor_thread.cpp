@@ -9,6 +9,7 @@
 #include "executor_pool_basic.h"
 #include "executor_thread_ctx.h"
 #include "probes.h"
+#include "worker_context.h"
 
 #include <atomic>
 #include <ydb/library/actors/prof/tag.h>
@@ -766,5 +767,8 @@ namespace NActors {
         statsCopy = TExecutorThreadStats();
         statsCopy.Aggregate(SharedStats[poolId]);
     }
+
+    TGenericExecutorThreadCtx::~TGenericExecutorThreadCtx()
+    {}
 
 }

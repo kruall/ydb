@@ -10,6 +10,7 @@
 
 #include <openssl/sha.h>
 
+#include <util/string/cast.h>
 #include <util/generic/string.h>
 #include <util/generic/vector.h>
 #include <util/generic/set.h>

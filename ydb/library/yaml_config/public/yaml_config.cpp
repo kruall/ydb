@@ -2,6 +2,7 @@
 #include "yaml_config_impl.h"
 
 #include <util/digest/sequence.h>
+#include <util/string/cast.h>
 
 template <>
 struct THash<NKikimr::NYamlConfig::TLabel> {

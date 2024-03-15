@@ -1,7 +1,6 @@
 #pragma once
 
 #include "executor_pool.h"
-#include "executor_thread.h"
 #include "mon_stats.h"
 #include "scheduler_queue.h"
 #include <ydb/library/actors/util/activation_queue.h>
@@ -13,6 +12,7 @@
 
 namespace NActors {
     class TActorSystem;
+    class TMailboxTable;
 
     class TExecutorPoolBaseMailboxed: public IExecutorPool {
     protected:

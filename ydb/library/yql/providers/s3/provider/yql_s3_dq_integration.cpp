@@ -494,7 +494,7 @@ public:
 
                 YQL_CLOG(DEBUG, ProviderS3) << " hasDirectories=" << hasDirectories << ", consumersCount=" << consumersCount;
 
-                auto fileQueueActor = NActors::TActivationContext::ActorSystem()->Register(NDq::CreateS3FileQueueActor(
+                auto fileQueueActor = NActors::TActivationContext::Register(NDq::CreateS3FileQueueActor(
                     0ul,
                     std::move(paths),
                     fileQueuePrefetchSize,

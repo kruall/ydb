@@ -12,6 +12,8 @@
 #include <ydb/core/tx/locks/sys_tables.h>
 #include <ydb/library/aclib/aclib.h>
 
+#include <library/cpp/monlib/dynamic_counters/counters.h>
+
 #include <util/datetime/base.h>
 #include <util/generic/hash.h>
 #include <util/generic/hash_set.h>

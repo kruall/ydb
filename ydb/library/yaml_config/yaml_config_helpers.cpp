@@ -1,5 +1,7 @@
 #include "yaml_config_helpers.h"
 
+#include <util/string/split.h>
+
 namespace NKikimr::NYaml {
 
 NJson::TJsonValue* Traverse(NJson::TJsonValue& json, const TVector<TString>& pathPieces) {

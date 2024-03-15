@@ -98,7 +98,7 @@ protected:
             }
         }
         LOG_WARN_S(ctx, HttpLog, "Failed to init - retrying...");
-        ctx.ExecutorThread.Schedule(TDuration::Seconds(1), event.Release());
+        ctx.Schedule(TDuration::Seconds(1), event.Release());
     }
 
     void Die(const NActors::TActorContext& ctx) override {

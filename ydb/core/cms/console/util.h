@@ -4,6 +4,7 @@
 #include <ydb/core/protos/config.pb.h>
 
 #include <ydb/core/base/tablet_pipe.h>
+#include <util/generic/bitmap.h>
 
 namespace NKikimr::NConsole {
 

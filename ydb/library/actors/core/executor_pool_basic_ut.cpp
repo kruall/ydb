@@ -6,6 +6,7 @@
 #include <ydb/library/actors/util/should_continue.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <util/system/thread.h>
 
 using namespace NActors;
 

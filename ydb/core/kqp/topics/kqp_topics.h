@@ -12,6 +12,7 @@
 #include <util/system/types.h>
 
 #include <util/generic/fwd.h>
+#include <util/generic/set.h>
 #include <util/generic/hash.h>
 #include <util/generic/ylimits.h>
 

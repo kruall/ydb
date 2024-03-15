@@ -1,7 +1,10 @@
 #include "executor_pool_io.h"
 #include "actor.h"
 #include "config.h"
+#include "executor_thread.h"
+#include "executor_thread_ctx.h"
 #include "mailbox.h"
+#include "worker_context.h"
 #include <ydb/library/actors/util/affinity.h>
 #include <ydb/library/actors/util/datetime.h>
 
@@ -110,7 +113,7 @@ namespace NActors {
         ScheduleQueue.Reset(new NSchedulerQueue::TQueueType());
 
         for (i16 i = 0; i != PoolThreads; ++i) {
-            Threads[i].Thread.Reset(new TExecutorThread(i, 0, actorSystem, this, MailboxTable.Get(), PoolName));
+            Threads[i].Thread.reset(new TExecutorThread(i, 0, actorSystem, this, MailboxTable.Get(), PoolName));
         }
 
         *scheduleReaders = &ScheduleQueue->Reader;

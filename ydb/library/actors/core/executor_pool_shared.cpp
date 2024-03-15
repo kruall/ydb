@@ -17,7 +17,7 @@ TSharedExecutorPool::TSharedExecutorPool(const TSharedExecutorPoolConfig &config
     , Pools(poolCount)
     , PoolCount(poolCount)
     , SharedThreadCount(poolsWithThreads.size())
-    , Threads(new TSharedExecutorThreadCtx[SharedThreadCount])
+    , Threads(new NThreading::TPadded<TSharedExecutorThreadCtx>[SharedThreadCount])
     , Timers(new TTimers[SharedThreadCount])
     , TimePerMailbox(config.TimePerMailbox)
     , EventsPerMailbox(config.EventsPerMailbox)
@@ -49,7 +49,7 @@ void TSharedExecutorPool::Prepare(TActorSystem* actorSystem, NSchedulerQueue::TR
         for (i16 i = 0; i != SharedThreadCount; ++i) {
             // !TODO
             Threads[i].ExecutorPools[0].store(dynamic_cast<TBasicExecutorPool*>(poolByThread[i]), std::memory_order_release);
-            Threads[i].Thread.Reset(
+            Threads[i].Thread.reset(
                 new TSharedExecutorThread(
                     -1,
                     actorSystem,

@@ -11,6 +11,8 @@
 #include <ydb/core/kqp/common/kqp_user_request_context.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
 
+#include <library/cpp/lwtrace/shuttle.h>
+
 namespace NKikimr::NKqp::NPrivateEvents {
 
 struct TEvCompileRequest: public TEventLocal<TEvCompileRequest, TKqpEvents::EvCompileRequest> {

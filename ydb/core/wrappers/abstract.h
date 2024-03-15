@@ -94,9 +94,9 @@ public:
     template <class TBaseEventObject>
     void Reply(const NActors::TActorId& recipientId, std::unique_ptr<TBaseEventObject>&& ev) const {
         if (Adapter) {
-            TlsActivationContext->ActorSystem()->Send(Adapter->GetRecipient(recipientId), Adapter->RebuildReplyEvent(std::move(ev)).release());
+            TActivationContext::Send(Adapter->GetRecipient(recipientId), std::move(Adapter->RebuildReplyEvent(std::move(ev))));
         } else {
-            TlsActivationContext->ActorSystem()->Send(recipientId, ev.release());
+            TActivationContext::Send(recipientId, std::move(ev));
         }
 
     }

@@ -4,7 +4,6 @@
 #include <util/system/filemap.h>
 
 #include "actor_bootstrapped.h"
-#include "executor_thread.h"
 #include "event_local.h"
 
 #include <thread>
@@ -156,7 +155,7 @@ namespace NActors {
 
     protected: // Actor System compatibility section
         const TActorContext& GetActorContext() const { return TActivationContext::AsActorContext(); }
-        TActorSystem *GetActorSystem() const { return GetActorContext().ExecutorThread.ActorSystem; }
+        TActorSystem *GetActorSystem() const;
         TInstant Now() const { return GetActorContext().Now(); }
         TMonotonic Monotonic() const { return GetActorContext().Monotonic(); }
 
