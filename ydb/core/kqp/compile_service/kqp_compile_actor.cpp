@@ -249,7 +249,7 @@ private:
     }
 
     void Continue(const TActorContext &ctx) {
-        TActorSystem* actorSystem = ctx.ExecutorThread.ActorSystem;
+        TActorSystem* actorSystem = ctx.ActorSystem();
         TActorId selfId = ctx.SelfID;
 
         auto callback = [actorSystem, selfId](const TFuture<bool>& future) {
@@ -270,7 +270,7 @@ private:
             std::make_shared<TKqpTableMetadataLoader>(
                 QueryId.Cluster, TlsActivationContext->ActorSystem(), Config, true, TempTablesState, 2 * TDuration::Seconds(MetadataProviderConfig.GetRefreshPeriodSeconds()));
         Gateway = CreateKikimrIcGateway(QueryId.Cluster, QueryId.Settings.QueryType, QueryId.Database, std::move(loader),
-            ctx.ExecutorThread.ActorSystem, ctx.SelfID.NodeId(), counters, QueryServiceConfig);
+            ctx.ActorSystem(), ctx.SelfID.NodeId(), counters, QueryServiceConfig);
         Gateway->SetToken(QueryId.Cluster, UserToken);
 
         Config->FeatureFlags = AppData(ctx)->FeatureFlags;

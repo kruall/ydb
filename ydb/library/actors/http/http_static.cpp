@@ -1,6 +1,5 @@
 #include "http_proxy.h"
 #include "http_static.h"
-#include <ydb/library/actors/core/executor_pool_basic.h>
 #include <ydb/library/actors/core/log.h>
 #include <ydb/library/actors/core/scheduler_basic.h>
 #include <ydb/library/actors/http/http.h>

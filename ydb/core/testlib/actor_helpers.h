@@ -1,8 +1,13 @@
 #pragma once
 #include "defs.h"
 
-#include <ydb/library/actors/core/mailbox.h>
-#include <ydb/library/actors/core/executor_thread.h>
+namespace NActors {
+    class TActorSystem;
+    struct TMailboxHeader;
+    class TExecutorThread;
+    struct TActorContext;
+    struct TActivationContext;
+}
 
 namespace NKikimr {
 

@@ -2397,7 +2397,7 @@ public:
         if (mon) {
             mon->RegisterActorPage({
                 .RelPath = "status",
-                .ActorSystem = TlsActivationContext->ExecutorThread.ActorSystem,
+                .ActorSystem = TActivationContext::ActorSystem(),
                 .ActorId = SelfId(),
                 .UseAuth = false,
             });

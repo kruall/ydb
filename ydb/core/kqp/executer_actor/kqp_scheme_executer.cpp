@@ -257,7 +257,7 @@ public:
         );
         RegisterWithSameMailbox(requestHandler);
 
-        auto actorSystem = TlsActivationContext->AsActorContext().ExecutorThread.ActorSystem;
+        auto actorSystem = TActivationContext::ActorSystem();
         auto selfId = SelfId();
         promise.GetFuture().Subscribe([actorSystem, selfId](const TFuture<IKqpGateway::TGenericResult>& future) {
             auto ev = MakeHolder<TEvPrivate::TEvResult>();

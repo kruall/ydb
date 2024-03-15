@@ -36,7 +36,7 @@ class TStateStorageWarden : public TActorBootstrapped<TStateStorageWarden> {
         // updates current to updated, kills unused replicas, starts new
         // returns true is smth changed
         const ui32 selfNode = SelfId().NodeId();
-        TActorSystem *sys = TlsActivationContext->ExecutorThread.ActorSystem;
+        TActorSystem *sys = TActivationContext::ActorSystem();
         const ui32 sysPoolId = AppData()->SystemPoolId;
 
         bool hasChanges = false;

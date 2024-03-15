@@ -14,6 +14,7 @@
 #include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/core/mon_stats.h>
 
 #include <util/system/info.h>
 #include <util/string/vector.h>
@@ -279,7 +280,7 @@ class TLocalNodeRegistrar : public TActorBootstrapped<TLocalNodeRegistrar> {
             TExecutorPoolStats poolStats;
             TVector<TExecutorThreadStats> statsCopy;
             TVector<TExecutorThreadStats> sharedStatsCopy;
-            ctx.ExecutorThread.ActorSystem->GetPoolStats(AppData()->UserPoolId, poolStats, statsCopy, sharedStatsCopy);
+            ctx.ActorSystem()->GetPoolStats(AppData()->UserPoolId, poolStats, statsCopy, sharedStatsCopy);
             if (!statsCopy.empty()) {
                 record.MutableResourceMaximum()->SetCPU(poolStats.CurrentThreadCount * 1000000);
             }
@@ -1083,7 +1084,7 @@ class TDomainLocal : public TActorBootstrapped<TDomainLocal> {
         RunningTenants.at(tenant).Locals.push_back(actorId);
 
         TActorId localRegistrarServiceId = MakeLocalRegistrarID(ctx.SelfID.NodeId(), hiveId);
-        ctx.ExecutorThread.ActorSystem->RegisterLocalService(localRegistrarServiceId, actorId);
+        ctx.ActorSystem()->RegisterLocalService(localRegistrarServiceId, actorId);
     }
 
     void RegisterAsDomain(const TRegistrationInfo &info,

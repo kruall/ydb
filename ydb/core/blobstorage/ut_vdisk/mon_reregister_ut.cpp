@@ -1,7 +1,6 @@
 #include "defs.h"
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
 #include <ydb/library/actors/core/executor_pool_io.h>
 #include <ydb/library/actors/core/scheduler_basic.h>
 #include <ydb/core/mon/mon.h>
@@ -44,7 +43,7 @@ Y_UNIT_TEST_SUITE(TMonitoring) {
 
             TString path = "myworker";
             TString name = "myworker";
-            mon->RegisterActorPage(actorsMonPage, path, name, false, ctx.ExecutorThread.ActorSystem, ctx.SelfID);
+            mon->RegisterActorPage(actorsMonPage, path, name, false, ctx.ActorSystem(), ctx.SelfID);
 
             STR << "MyWorker Bootstrap: Incarnation: " << Incarnation << "\n";
 

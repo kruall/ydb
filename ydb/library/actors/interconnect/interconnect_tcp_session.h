@@ -3,7 +3,6 @@
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/event_pb.h>
 #include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/library/actors/core/log.h>
 #include <ydb/library/actors/protos/services_common.pb.h>
 #include <ydb/library/actors/util/datetime.h>
@@ -668,7 +667,7 @@ namespace NActors {
                 auto ev = new TEvSessionBufferSizeRequest();
                 return new IEventHandle(recp, sender, ev, IEventHandle::FlagTrackDelivery);
             };
-            RepliesNumber = TlsActivationContext->ExecutorThread.ActorSystem->BroadcastToProxies(eventFabric);
+            RepliesNumber = TActivationContext::ActorSystem()->BroadcastToProxies(eventFabric);
             Become(&TInterconnectSessionKiller::StateFunc);
         }
 

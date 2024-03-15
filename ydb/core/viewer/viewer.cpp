@@ -94,7 +94,7 @@ public:
             mon->RegisterActorPage({
                 .Title = "Viewer (classic)",
                 .RelPath = "viewer",
-                .ActorSystem = ctx.ExecutorThread.ActorSystem,
+                .ActorSystem = ctx.ActorSystem(),
                 .ActorId = ctx.SelfID,
                 .UseAuth = true,
                 .AllowedSIDs = allowedSIDs,
@@ -102,32 +102,32 @@ public:
             mon->RegisterActorPage({
                 .Title = "Viewer",
                 .RelPath = "viewer/v2",
-                .ActorSystem = ctx.ExecutorThread.ActorSystem,
+                .ActorSystem = ctx.ActorSystem(),
                 .ActorId = ctx.SelfID,
             });
             mon->RegisterActorPage({
                 .Title = "Monitoring",
                 .RelPath = "monitoring",
-                .ActorSystem = ctx.ExecutorThread.ActorSystem,
+                .ActorSystem = ctx.ActorSystem(),
                 .ActorId = ctx.SelfID,
                 .UseAuth = false,
             });
             mon->RegisterActorPage({
                 .RelPath = "counters/hosts",
-                .ActorSystem = ctx.ExecutorThread.ActorSystem,
+                .ActorSystem = ctx.ActorSystem(),
                 .ActorId = ctx.SelfID,
                 .UseAuth = false,
             });
             mon->RegisterActorPage({
                 .RelPath = "healthcheck",
-                .ActorSystem = ctx.ExecutorThread.ActorSystem,
+                .ActorSystem = ctx.ActorSystem(),
                 .ActorId = ctx.SelfID,
                 .UseAuth = false,
             });
             mon->RegisterActorPage({
                 .Title = "VDisk",
                 .RelPath = "vdisk",
-                .ActorSystem = ctx.ExecutorThread.ActorSystem,
+                .ActorSystem = ctx.ActorSystem(),
                 .ActorId = ctx.SelfID,
                 .UseAuth = true,
                 .AllowedSIDs = allowedSIDs,
@@ -358,11 +358,11 @@ private:
             }
         }
         if (filename.StartsWith("counters/hosts")) {
-            ctx.ExecutorThread.RegisterActor(new TCountersHostsList(this, ev));
+            ctx.Register(new TCountersHostsList(this, ev));
             return;
         }
         if (filename.StartsWith("healthcheck")) {
-            ctx.ExecutorThread.RegisterActor(new TJsonHealthCheck(this, ev));
+            ctx.Register(new TJsonHealthCheck(this, ev));
             return;
         }
         // TODO: check path validity

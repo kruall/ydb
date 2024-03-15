@@ -5,6 +5,7 @@
 #include <ydb/library/actors/core/actor.h>
 #include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/core/interconnect.h>
+#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/library/actors/core/mailbox.h>
 #include <ydb/library/actors/core/scheduler_queue.h>
 #include <ydb/library/actors/interconnect/interconnect_common.h>

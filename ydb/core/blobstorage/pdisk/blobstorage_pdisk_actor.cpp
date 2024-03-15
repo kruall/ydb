@@ -224,7 +224,7 @@ public:
 
             TString path = Sprintf("pdisk%09" PRIu32, (ui32)Cfg->PDiskId);
             TString name = Sprintf("PDisk%09" PRIu32, (ui32)Cfg->PDiskId);
-            mon->RegisterActorPage(pdisksMonPage, path, name, false, ctx.ExecutorThread.ActorSystem,
+            mon->RegisterActorPage(pdisksMonPage, path, name, false, ctx.ActorSystem(),
                 SelfId());
         }
         NodeWhiteboardServiceId = NNodeWhiteboard::MakeNodeWhiteboardServiceId(SelfId().NodeId());
@@ -1255,10 +1255,10 @@ IActor* CreatePDisk(const TIntrusivePtr<TPDiskConfig> &cfg, const NPDisk::TMainK
 
 void TRealPDiskServiceFactory::Create(const TActorContext &ctx, ui32 pDiskID,
         const TIntrusivePtr<TPDiskConfig> &cfg, const NPDisk::TMainKey &mainKey, ui32 poolId, ui32 nodeId) {
-    TActorId actorId = ctx.ExecutorThread.RegisterActor(
+    TActorId actorId = ctx.Register(
         CreatePDisk(cfg, mainKey, AppData(ctx)->Counters), TMailboxType::ReadAsFilled, poolId);
     TActorId pDiskServiceId = MakeBlobStoragePDiskID(nodeId, pDiskID);
-    ctx.ExecutorThread.ActorSystem->RegisterLocalService(pDiskServiceId, actorId);
+    ctx.ActorSystem()->RegisterLocalService(pDiskServiceId, actorId);
 }
 
 } // NKikimr

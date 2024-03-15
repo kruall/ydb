@@ -1,7 +1,6 @@
 #include "interconnect_tcp_server.h"
 #include "interconnect_handshake.h"
 
-#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/library/actors/core/log.h>
 #include <ydb/library/actors/protos/services_common.pb.h>
 
@@ -83,7 +82,7 @@ namespace NActors {
             }
         }
         if (const auto& callback = ProxyCommonCtx->InitWhiteboard) {
-            callback(Port, TlsActivationContext->ExecutorThread.ActorSystem);
+            callback(Port, TActivationContext::ActorSystem());
         }
         const bool success = ctx.Send(MakePollerActorId(), new TEvPollerRegister(Listener, SelfId(), {}));
         Y_ABORT_UNLESS(success);

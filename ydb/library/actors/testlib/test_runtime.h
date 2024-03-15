@@ -4,7 +4,6 @@
 #include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/core/log.h>
 #include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/library/actors/core/mailbox.h>
 #include <ydb/library/actors/core/monotonic_provider.h>
 #include <ydb/library/actors/util/should_continue.h>
@@ -40,6 +39,8 @@ const TDuration DEFAULT_DISPATCH_TIMEOUT = NSan::PlainOrUnderSanitizer(
 
 
 namespace NActors {
+    class TExecutorThread;
+
     struct THeSingleSystemEnv { };
 
     struct TTestActorSetupCmd { // like TActorSetupCmd, but not owning the Actor

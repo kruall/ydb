@@ -402,7 +402,7 @@ public:
 
             TString path = Sprintf("blobstorageproxy%09" PRIu32, (ui32)GroupId);
             TString name = Sprintf("BlobStorageProxy%09" PRIu32, (ui32)GroupId);
-            mon->RegisterActorPage(proxiesMonPage, path, name, false, TlsActivationContext->ExecutorThread.ActorSystem,
+            mon->RegisterActorPage(proxiesMonPage, path, name, false, TActivationContext::ActorSystem(),
                 SelfId());
         }
 

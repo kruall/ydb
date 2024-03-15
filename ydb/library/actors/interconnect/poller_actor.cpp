@@ -3,7 +3,6 @@
 
 #include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/executor_thread.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/log.h>
 #include <ydb/library/actors/core/probes.h>
@@ -268,7 +267,7 @@ namespace NActors {
         }
 
         void Bootstrap() {
-            PollerThread = std::make_shared<TPollerThread>(TlsActivationContext->ExecutorThread.ActorSystem);
+            PollerThread = std::make_shared<TPollerThread>(TActivationContext::ActorSystem());
             Become(&TPollerActor::StateFunc);
         }
 

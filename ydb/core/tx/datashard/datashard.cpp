@@ -473,7 +473,7 @@ void TDataShard::SendDelayedAcks(const TActorContext& ctx, TVector<THolder<IEven
         LOG_DEBUG(ctx, NKikimrServices::TX_DATASHARD,
                   "Send delayed Ack RS Ack at %" PRIu64 " %s",
                   TabletID(), x->ToString().data());
-        ctx.ExecutorThread.Send(x.Release());
+        ctx.Send(x.Release());
         IncCounter(COUNTER_ACK_SENT_DELAYED);
     }
 
@@ -2883,7 +2883,7 @@ void TDataShard::HandleAsFollower(TEvDataShard::TEvProposeTransaction::TPtr &ev,
 void TDataShard::CheckDelayedProposeQueue(const TActorContext &ctx) {
     if (DelayedProposeQueue && !Pipeline.HasProposeDelayers()) {
         for (auto& ev : DelayedProposeQueue) {
-            ctx.ExecutorThread.Send(ev.Release());
+            ctx.Send(ev.Release());
         }
         DelayedProposeQueue.clear();
         DelayedProposeQueue.shrink_to_fit();

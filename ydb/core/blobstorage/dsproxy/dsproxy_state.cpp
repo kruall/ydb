@@ -249,7 +249,7 @@ namespace NKikimr {
             for (auto& info : ev->Get()->Nodes) {
                 map[info.NodeId] = std::move(info.Location);
             }
-            NodeLayoutInfo = MakeIntrusive<TNodeLayoutInfo>(map[TlsActivationContext->ExecutorThread.ActorSystem->NodeId],
+            NodeLayoutInfo = MakeIntrusive<TNodeLayoutInfo>(map[TActivationContext::ActorSystem()->NodeId],
                 Info, map);
         }
     }

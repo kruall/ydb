@@ -3186,7 +3186,7 @@ protected:
                 ev->Record.AddSysTablesPartOwners(pi);
             }
 
-            ev->Record.SetNodeId(ctx.ExecutorThread.ActorSystem->NodeId);
+            ev->Record.SetNodeId(ctx.ActorSystem()->NodeId);
             ev->Record.SetStartTime(StartTime().MilliSeconds());
 
             if (DstSplitDescription)

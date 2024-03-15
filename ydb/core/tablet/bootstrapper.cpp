@@ -369,7 +369,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
         const ui64 wx = BootstrapperInfo->WatchThreshold.MicroSeconds();
         const auto sleepDuration = TDuration::MicroSeconds(wx / 2 + wx * (SelfSeed % 0x10000) / 0x20000);
 
-        ctx.ExecutorThread.ActorSystem->Schedule(
+        ctx.ActorSystem()->Schedule(
             Min(sleepDuration, BootDelayedUntil - now),
             new IEventHandle(ctx.SelfID, ctx.SelfID, new TEvents::TEvWakeup(), 0, RoundCounter));
         Become(&TThis::StateSleep);
@@ -414,7 +414,7 @@ class TBootstrapper : public TActor<TBootstrapper> {
             const auto sleepDuration = TDuration::MicroSeconds(wx / 2 + wx * (SelfSeed % 0x10000) / 0x20000);
 
             Become(&TThis::StateSleep);
-            ctx.ExecutorThread.ActorSystem->Schedule(sleepDuration, new IEventHandle(ctx.SelfID, ctx.SelfID, new TEvents::TEvWakeup(), 0, RoundCounter));
+            ctx.ActorSystem()->Schedule(sleepDuration, new IEventHandle(ctx.SelfID, ctx.SelfID, new TEvents::TEvWakeup(), 0, RoundCounter));
             return;
         } else if (!CheckBootPermitted(undelivered, disconnected, ctx)) {
             return;

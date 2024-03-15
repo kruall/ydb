@@ -567,7 +567,7 @@ public:
         if (mon) {
             NMonitoring::TIndexMonPage * page = mon->RegisterIndexPage("actors", "Actors");
             mon->RegisterActorPage(page, "sqsgc", "SQS Garbage Collector", false,
-                                   TlsActivationContext->ExecutorThread.ActorSystem, SelfId());
+                                   TActivationContext::ActorSystem(), SelfId());
         }
     }
 

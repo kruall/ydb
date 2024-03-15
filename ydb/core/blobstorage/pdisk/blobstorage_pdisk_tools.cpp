@@ -21,7 +21,6 @@
 
 #include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/mon.h>
 #include <ydb/library/actors/core/scheduler_basic.h>

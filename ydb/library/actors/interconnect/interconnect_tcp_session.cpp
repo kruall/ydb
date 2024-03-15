@@ -53,7 +53,7 @@ namespace NActors {
     }
 
     void TInterconnectSessionTCP::Init() {
-        auto destroyCallback = [as = TlsActivationContext->ExecutorThread.ActorSystem, id = Proxy->Common->DestructorId](THolder<IEventBase> event) {
+        auto destroyCallback = [as = TActivationContext::ActorSystem(), id = Proxy->Common->DestructorId](THolder<IEventBase> event) {
             as->Send(id, event.Release());
         };
         Pool.ConstructInPlace(Proxy->Common, std::move(destroyCallback));
@@ -1003,7 +1003,7 @@ namespace NActors {
             // they have one scope in this case
             bool reportClockSkew = Proxy->Common->LocalScopeId.first != 0 && Proxy->Common->LocalScopeId == Params.PeerScopeId;
 
-            callback({TlsActivationContext->ExecutorThread.ActorSystem,
+            callback({TActivationContext::ActorSystem(),
                      Proxy->PeerNodeId,
                      Proxy->Metrics->GetHumanFriendlyPeerHostName(),
                      connected,
@@ -1323,6 +1323,6 @@ namespace NActors {
     }
 
     void CreateSessionKillingActor(TInterconnectProxyCommon::TPtr common) {
-        TlsActivationContext->ExecutorThread.ActorSystem->Register(new TInterconnectSessionKiller(common));
+        TActivationContext::Register(new TInterconnectSessionKiller(common));
     }
 }

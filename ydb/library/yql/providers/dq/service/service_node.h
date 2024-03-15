@@ -8,7 +8,6 @@
 
 #include <ydb/library/yql/minikql/mkql_function_registry.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
 #include <ydb/library/actors/core/scheduler_basic.h>
 #include <ydb/library/actors/interconnect/interconnect.h>
 #include <ydb/library/actors/interconnect/interconnect_common.h>

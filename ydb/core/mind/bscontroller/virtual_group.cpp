@@ -1,6 +1,8 @@
 #include "impl.h"
 #include "config.h"
 
+#include <ydb/library/actors/core/mailbox.h>
+
 namespace NKikimr::NBsController {
 
     void TBlobStorageController::TConfigState::ExecuteStep(const NKikimrBlobStorage::TAllocateVirtualGroup& cmd, TStatus& status) {

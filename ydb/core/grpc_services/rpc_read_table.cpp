@@ -152,7 +152,7 @@ public:
         SendProposeRequest(ctx);
 
         auto actorId = SelfId();
-        const TActorSystem* const as = ctx.ExecutorThread.ActorSystem;
+        const TActorSystem* const as = ctx.ActorSystem();
         auto clientLostCb = [actorId, as]() {
             LOG_WARN(*as, NKikimrServices::READ_TABLE_API, "ForgetAction occurred, send TEvPoisonPill");
             as->Send(actorId, new TEvents::TEvPoisonPill());
@@ -479,7 +479,7 @@ private:
     void SendProposeRequest(const TActorContext &ctx) {
         const auto req = TEvReadTableRequest::GetProtoRequest(Request_.get());
         auto actorId = SelfId();
-        const TActorSystem* const as = ctx.ExecutorThread.ActorSystem;
+        const TActorSystem* const as = ctx.ActorSystem();
         auto cb = [actorId, as](size_t left) {
             as->Send(actorId, new TRpcServices::TEvGrpcNextReply{left});
         };

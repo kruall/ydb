@@ -326,7 +326,7 @@ void TMoveTopicActor::OpenPipe(const TActorContext &ctx)
     NTabletPipe::TClientConfig pipeConfig;
     pipeConfig.RetryPolicy = NConsole::FastConnectRetryPolicy();
     auto pipe = NTabletPipe::CreateClient(ctx.SelfID, SchemeShardTabletId, pipeConfig);
-    Pipe = ctx.ExecutorThread.RegisterActor(pipe);
+    Pipe = ctx.Register(pipe);
 }
 
 void TMoveTopicActor::OnPipeDestroyed(const TActorContext &ctx)

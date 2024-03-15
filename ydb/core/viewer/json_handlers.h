@@ -57,7 +57,7 @@ struct TJsonHandlers {
         }
         if (itJson != JsonHandlers.end()) {
             try {
-                ctx.ExecutorThread.RegisterActor(itJson->second->CreateRequestActor(viewer, ev));
+                ctx.Register(itJson->second->CreateRequestActor(viewer, ev));
             }
             catch (const std::exception& e) {
                 ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes(TString("HTTP/1.1 400 Bad Request\r\n\r\n") + e.what(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));

@@ -98,7 +98,7 @@ public:
         ApplyGroupInfo(*std::exchange(Info, nullptr));
         QLOG_INFO_S("BSQ01", "starting parent# " << parent);
         InitCounters();
-        RegisteredInUniversalScheduler = RegisterActorInUniversalScheduler(SelfId(), FlowRecord, ctx.ExecutorThread.ActorSystem);
+        RegisteredInUniversalScheduler = RegisterActorInUniversalScheduler(SelfId(), FlowRecord, ctx.ActorSystem());
         Y_ABORT_UNLESS(!BlobStorageProxy);
         BlobStorageProxy = parent;
         RequestReadiness(nullptr, ctx);
@@ -785,14 +785,14 @@ private:
     void Die(const TActorContext& ctx) override {
         QLOG_DEBUG_S("BSQ99", "terminating queue actor");
         if (RegisteredInUniversalScheduler) {
-            RegisterActorInUniversalScheduler(SelfId(), nullptr, ctx.ExecutorThread.ActorSystem);
+            RegisterActorInUniversalScheduler(SelfId(), nullptr, ctx.ActorSystem());
         }
         Unsubscribe(RemoteVDisk.NodeId(), ctx);
         return TActor::Die(ctx);
     }
 
     void Unsubscribe(const ui32 nodeId, const TActorContext& ctx) {
-        ctx.Send(ctx.ExecutorThread.ActorSystem->InterconnectProxy(nodeId), new TEvents::TEvUnsubscribe);
+        ctx.Send(ctx.ActorSystem()->InterconnectProxy(nodeId), new TEvents::TEvUnsubscribe);
         SessionId = {};
     }
 

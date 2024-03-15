@@ -10,7 +10,6 @@
 #include <ydb/library/security/ydb_credentials_provider_factory.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
 #include <ydb/library/actors/core/scheduler_basic.h>
 #include <library/cpp/retry/retry.h>
 #include <library/cpp/testing/unittest/registar.h>

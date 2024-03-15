@@ -43,7 +43,7 @@ ui64 TTxMediator::SubjectiveTime() {
 
 void TTxMediator::InitSelfState(const TActorContext &ctx) {
     Y_ABORT_UNLESS(Config.Bukets);
-    ExecQueue = ctx.ExecutorThread.RegisterActor(CreateTxMediatorExecQueue(ctx.SelfID, TabletID(), 1, Config.Bukets->Buckets()));
+    ExecQueue = ctx.Register(CreateTxMediatorExecQueue(ctx.SelfID, TabletID(), 1, Config.Bukets->Buckets()));
     Y_ABORT_UNLESS(!!ExecQueue);
 
     Y_ABORT_UNLESS(Config.CoordinatorSeletor);
@@ -303,7 +303,7 @@ void TTxMediator::Handle(TEvMediatorTimecast::TEvWatch::TPtr &ev, const TActorCo
     LOG_DEBUG_S(ctx, NKikimrServices::TX_MEDIATOR, "tablet# " << TabletID() << " HANDLE EvWatch");
     LOG_DEBUG_S(ctx, NKikimrServices::TX_MEDIATOR, "tablet# " << TabletID() << " SEND EvWatch to# "
         << ExecQueue.ToString() << " ExecQueue");
-    ctx.ExecutorThread.Send(ev->Forward(ExecQueue));
+    ctx.Send(ev->Forward(ExecQueue));
 }
 
 TTxMediator::TTxMediator(TTabletStorageInfo *info, const TActorId &tablet)
