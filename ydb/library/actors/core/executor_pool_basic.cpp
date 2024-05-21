@@ -200,6 +200,9 @@ namespace NActors {
     }
 
     ui32 TBasicExecutorPool::GetReadyActivationCommon(TWorkerContext& wctx, ui64 revolvingCounter) {
+        if constexpr (DebugMode) {
+            EnterToUncertainState();
+        }
         TWorkerId workerId = wctx.WorkerId;
         Y_DEBUG_ABORT_UNLESS(workerId < MaxFullThreadCount);
 
@@ -225,11 +228,17 @@ namespace NActors {
 
                 bool needToWait = false;
                 bool needToBlock = false;
+                if constexpr (DebugMode) {
+                    LeaveFromUncertainState();
+                }
                 AskToGoToSleep(&needToWait, &needToBlock);
                 if (needToWait) {
                     if (Threads[workerId].Wait(SpinThresholdCycles, &StopFlag)) {
                         return 0;
                     }
+                }
+                if constexpr (DebugMode) {
+                    EnterToUncertainState();
                 }
             } else {
                 if (const ui32 activation = Activations.Pop(++revolvingCounter)) {
@@ -240,6 +249,9 @@ namespace NActors {
                         wctx.SharedThread->SetWork();
                     }
                     AtomicDecrement(Semaphore);
+                    if constexpr (DebugMode) {
+                        LeaveFromUncertainState();
+                    }
                     return activation;
                 }
             }
@@ -248,7 +260,9 @@ namespace NActors {
             x = AtomicGet(Semaphore);
             semaphore = TSemaphore::GetSemaphore(x);
         }
-
+        if constexpr (DebugMode) {
+            LeaveFromUncertainState();
+        }
         return 0;
     }
 
@@ -304,6 +318,9 @@ namespace NActors {
     }
 
     void TBasicExecutorPool::ScheduleActivationExCommon(ui32 activation, ui64 revolvingCounter, TAtomic x) {
+        if constexpr (DebugMode) {
+            EnterToUncertainState();
+        }
         TSemaphore semaphore = TSemaphore::GetSemaphore(x);
 
         Activations.Push(activation, revolvingCounter);
@@ -316,6 +333,9 @@ namespace NActors {
             needToChangeOldSemaphore = false;
             x = AtomicIncrement(Semaphore);
             if (WakeUpLoopShared()) {
+                if constexpr (DebugMode) {
+                    LeaveFromUncertainState();
+                }
                 return;
             }
         }
@@ -340,6 +360,9 @@ namespace NActors {
 
         if (needToWakeUp) { // we must find someone to wake-up
             WakeUpLoop(semaphore.CurrentThreadCount);
+        }
+        if constexpr (DebugMode) {
+            LeaveFromUncertainState();
         }
     }
 
@@ -557,6 +580,9 @@ namespace NActors {
     }
 
     void TBasicExecutorPool::SetFullThreadCount(i16 threads) {
+        if constexpr (DebugMode) {
+            EnterToUncertainState();
+        }
         threads = Max<i16>(0, Min(MaxFullThreadCount, threads));
         with_lock (ChangeThreadsLock) {
             i16 prevCount = GetFullThreadCount();
@@ -571,6 +597,9 @@ namespace NActors {
             }
             AtomicAdd(Semaphore, semaphore.ConvertToI64() - oldX);
             LWPROBE(ThreadCount, PoolId, PoolName, threads, MinThreadCount, MaxThreadCount, DefaultThreadCount);
+        }
+        if constexpr (DebugMode) {
+            LeaveFromUncertainState();
         }
     }
 
@@ -784,6 +813,27 @@ namespace NActors {
         Y_ABORT_UNLESS(count < MaxSharedThreadsForPool);
         thread = SharedThreads[count].exchange(thread);
         Y_ABORT_UNLESS(!thread);
+    }
+
+
+    void TBasicExecutorPool::EnterToUncertainState() {
+        constexpr ui64 stopFlagBit = 1ll << 63;
+        uint64_t x = ThreadsInUncertainState.load(std::memory_order_acquire);
+        while (x & stopFlagBit) {
+            SpinLockPause();
+            x = ThreadsInUncertainState.load(std::memory_order_acquire);
+        }
+        ThreadsInUncertainState.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void TBasicExecutorPool::LeaveFromUncertainState() {
+        constexpr ui64 stopFlagBit = 1ll << 63;
+        uint64_t x = ThreadsInUncertainState.fetch_sub(1, std::memory_order_acq_rel);
+        while (x & stopFlagBit) {
+            SpinLockPause();
+            x = ThreadsInUncertainState.load(std::memory_order_acquire);
+        }
+
     }
 
 }

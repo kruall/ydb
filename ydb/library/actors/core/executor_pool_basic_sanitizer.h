@@ -21,9 +21,25 @@ public:
         Y_ABORT_UNLESS(semaphore.OldSemaphore <= 0 || semaphore.CurrentThreadCount != semaphore.CurrentSleepThreadCount || Pool->StopFlag.load());
     }
 
+    void CheckThreads() {
+        ui64 stopFlagBit = 1ll << 63;
+        Pool->ThreadsInUncertainState.fetch_add(stopFlagBit, std::memory_order_acq_rel);
+
+        while(Pool->ThreadsInUncertainState.load(std::memory_order_acquire) ^ stopFlagBit) {
+            SpinLockPause();
+        }
+
+        Pool->ThreadsInUncertainState.fetch_sub(stopFlagBit, std::memory_order_acq_rel);
+    }
+
     void* ThreadProc() override {
+        ui64 idx = 0;
         while (!StopFlag.load(std::memory_order_acquire)) {
+            idx++;
             CheckSemaphore();
+            if (idx % 128 == 0) {
+                CheckThreads();
+            }
             NanoSleep(1000);
         }
         return nullptr;

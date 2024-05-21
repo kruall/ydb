@@ -8,6 +8,7 @@
 #include "scheduler_queue.h"
 #include "executor_pool_base.h"
 #include "harmonizer.h"
+#include <atomic>
 #include <memory>
 #include <ydb/library/actors/actor_type/indexes.h>
 #include <ydb/library/actors/util/unordered_cache.h>
@@ -182,7 +183,8 @@ namespace NActors {
         NThreading::TPadded<std::atomic_uint64_t> SharedThreadsCount = 0;
         NThreading::TPadded<std::atomic<TSharedExecutorThreadCtx*>> SharedThreads[MaxSharedThreadsForPool] = {nullptr, nullptr};
 
-        std::unique_ptr<TBasicExecutorPoolSanitizer> Sanitizer;
+        NThreading::TPadded<std::unique_ptr<TBasicExecutorPoolSanitizer>> Sanitizer;
+        NThreading::TPadded<std::atomic_uint64_t> ThreadsInUncertainState;
 
     public:
         struct TSemaphore {
@@ -229,6 +231,9 @@ namespace NActors {
                            TExecutorPoolJail *jail = nullptr);
         explicit TBasicExecutorPool(const TBasicExecutorPoolConfig& cfg, IHarmonizer *harmonizer, TExecutorPoolJail *jail=nullptr);
         ~TBasicExecutorPool();
+
+        void EnterToUncertainState();
+        void LeaveFromUncertainState();
 
         void Initialize(TWorkerContext& wctx) override;
         ui32 GetReadyActivation(TWorkerContext& wctx, ui64 revolvingReadCounter) override;
