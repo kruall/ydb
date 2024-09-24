@@ -315,6 +315,79 @@ Y_UNIT_TEST_SUITE(HarmonizerTests) {
         UNIT_ASSERT_VALUES_EQUAL(mockPools[2]->ThreadCount, 1);
     }
 
+    Y_UNIT_TEST(TestThreadCounts) {
+        ui64 currentTs = 1000000;
+        std::vector<TMockExecutorPoolParams> params {
+            {
+                .DefaultFullThreadCount = 5,
+                .MinFullThreadCount = 5,
+                .MaxFullThreadCount = 15,
+                .DefaultThreadCount = 5.0f,
+                .MinThreadCount = 5.0f,
+                .MaxThreadCount = 15.0f,
+                .PoolId = 0,
+            },
+            {
+                .DefaultFullThreadCount = 5,
+                .MinFullThreadCount = 5,
+                .MaxFullThreadCount = 15,
+                .DefaultThreadCount = 5.0f,
+                .MinThreadCount = 5.0f,
+                .MaxThreadCount = 15.0f,
+                .PoolId = 1,
+            },
+            {
+                .DefaultFullThreadCount = 5,
+                .MinFullThreadCount = 5,
+                .MaxFullThreadCount = 15,
+                .DefaultThreadCount = 5.0f,
+                .MinThreadCount = 5.0f,
+                .MaxThreadCount = 15.0f,
+                .PoolId = 2,
+            },
+        };
+        auto harmonizer = MakeHarmonizer(currentTs);
+        std::vector<std::unique_ptr<TMockExecutorPool>> mockPools;
+        i16 budget = 0;
+        for (auto& param : params) {
+            mockPools.emplace_back(new TMockExecutorPool(param));
+            budget += param.DefaultFullThreadCount;
+        }
+        for (ui32 poolIdx = 0; poolIdx < params.size(); ++poolIdx) {
+            auto &pool = mockPools[poolIdx];
+            harmonizer->AddPool(pool.get());
+            pool->SetThreadCpuConsumption(TCpuConsumption{0.0, 0.0}, 0, params[poolIdx].MaxFullThreadCount);
+        }
+        currentTs += Us2Ts(1'000'000);
+        harmonizer->Harmonize(currentTs);
+
+        for (i16 i = 0; i < params[0].MaxFullThreadCount; ++i) {
+            for (i16 ii = 0; ii < params[1].MaxFullThreadCount; ++ii) {
+                for (i16 iii = 0; iii < params[2].MaxFullThreadCount; ++iii) {
+                    if (i + ii + iii > budget) {
+                        continue;
+                    }
+                    ui32 localBudget = budget - (i + ii + iii);
+                    currentTs += Us2Ts(60'000'000);
+                    mockPools[0]->SetFullThreadCount(i);
+                    mockPools[1]->SetFullThreadCount(ii);
+                    mockPools[2]->SetFullThreadCount(iii);
+                    mockPools[0]->IncreaseThreadCpuConsumption({60'000'000.0, 60'000'000.0}, 0, std::min<i16>(i, mockPools[0]->ThreadCount));
+                    mockPools[1]->IncreaseThreadCpuConsumption({60'000'000.0, 60'000'000.0}, 0, std::min<i16>(ii, mockPools[1]->ThreadCount));
+                    mockPools[2]->IncreaseThreadCpuConsumption({60'000'000.0, 60'000'000.0}, 0, std::min(iii, mockPools[2]->ThreadCount));
+                    harmonizer->Harmonize(currentTs);
+                    std::vector<TPoolHarmonizerStats> stats;
+                    for (auto& pool : params) {
+                        stats.emplace_back(harmonizer->GetPoolStats(pool.PoolId));
+                    }
+                    for (ui32 poolIdx = 0; poolIdx < params.size(); ++poolIdx) {
+                        UNIT_ASSERT_VALUES_EQUAL(stats[poolIdx].PotentialMaxThreadCount, std::min<i16>(mockPools[poolIdx]->ThreadCount + localBudget, params[poolIdx].MaxFullThreadCount));
+                    }
+                }
+            }
+        }
+    }
+
     Y_UNIT_TEST(TestEnableDisable) {
         ui64 currentTs = 1000000;
         auto harmonizer = MakeHarmonizer(currentTs);
