@@ -154,6 +154,19 @@ namespace NActors {
         TExecutorThreadCtx() = default;
     };
 
+    struct TUnitedExecutorThreadCtx : public TExecutorThreadCtx {
+        using TBase = TExecutorThreadCtx;
+
+        i16 PoolLeaseIndex = -1;
+        i16 OwnerPoolId = -1;
+        i16 CurrentPoolId = -1;
+        NHPTimer::STime SoftDeadlineForPool = 0;
+        NHPTimer::STime SoftProcessingDurationTs = 0;
+
+        bool Spin(ui64 spinThresholdCycles, std::atomic<bool> *stopFlag, std::atomic<ui64> *localNotifications, std::atomic<ui64> *threadsState); // in executor_pool_united.cpp
+
+        bool Wait(ui64 spinThresholdCycles, std::atomic<bool> *stopFlag, std::atomic<ui64> *localNotifications, std::atomic<ui64> *threadsState); // in executor_pool_united.cpp
+    };
 
     constexpr ui32 MaxPoolsForSharedThreads = 2;
 

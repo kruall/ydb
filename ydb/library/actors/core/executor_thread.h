@@ -17,7 +17,7 @@ namespace NActors {
     struct TSharedExecutorThreadCtx;
     class TExecutorPoolBaseMailboxed;
     class TMailboxTable;
-
+    class TMailboxCache;
     class TGenericExecutorThread: public ISimpleThread {
     protected:
         struct TProcessingResult {
@@ -85,6 +85,8 @@ namespace NActors {
 
         void UpdateThreadStats();
 
+        void SwitchMailboxCache(TMailboxTable* mailboxTable);
+
     public:
         TActorSystem* const ActorSystem;
         std::atomic<bool> StopFlag = false;
@@ -92,6 +94,8 @@ namespace NActors {
     protected:
         // Pool-specific
         IExecutorPool* ExecutorPool;
+        TStackVec<TMailboxCache, 8> MailboxCache;
+        ui64 CurrentPoolId = MaxPools;
 
         // Event-specific (currently executing)
         TVector<THolder<IActor>> DyingActors;
@@ -138,8 +142,7 @@ namespace NActors {
             : TGenericExecutorThread(workerId, 0, actorSystem, executorPool, mailboxTable, threadName, timePerMailbox, eventsPerMailbox)
         {}
 
-        virtual ~TExecutorThread()
-        {}
+        virtual ~TExecutorThread();
 
     private:
         void* ThreadProc();
@@ -156,9 +159,7 @@ namespace NActors {
                     TDuration timePerMailbox,
                     ui32 eventsPerMailbox);
 
-        virtual ~TSharedExecutorThread()
-        {}
-
+        virtual ~TSharedExecutorThread();
     private:
         TProcessingResult ProcessSharedExecutorPool(TExecutorPoolBaseMailboxed *pool);
 

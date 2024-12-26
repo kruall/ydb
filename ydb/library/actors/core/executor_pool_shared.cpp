@@ -2,6 +2,7 @@
 
 #include "actorsystem.h"
 #include "config.h"
+#include "debug.h"
 #include "executor_pool_basic.h"
 #include "executor_thread.h"
 #include "executor_thread_ctx.h"
@@ -16,6 +17,7 @@ class TSharedExecutorPool: public ISharedExecutorPool {
 public:
     TSharedExecutorPool(const TSharedExecutorPoolConfig &config, i16 poolCount, std::vector<i16> poolsWithThreads);
 
+    virtual ~TSharedExecutorPool() override;
     // IThreadPool
     void Prepare(TActorSystem* actorSystem, NSchedulerQueue::TReader** scheduleReaders, ui32* scheduleSz) override;
     void Start() override;
@@ -42,6 +44,8 @@ public:
 private:
     TSharedPoolState State;
 
+    TActorSystem* ActorSystem;
+
     std::vector<IExecutorPool*> Pools;
 
     i16 PoolCount;
@@ -66,14 +70,23 @@ TSharedExecutorPool::TSharedExecutorPool(const TSharedExecutorPoolConfig &config
     , EventsPerMailbox(config.EventsPerMailbox)
     , SoftProcessingDurationTs(config.SoftProcessingDurationTs)
 {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::ctor: start");
     for (ui32 poolIdx = 0, threadIdx = 0; poolIdx < poolsWithThreads.size(); ++poolIdx, ++threadIdx) {
         Y_ABORT_UNLESS(poolsWithThreads[poolIdx] < poolCount);
         State.ThreadByPool[poolsWithThreads[poolIdx]] = threadIdx;
         State.PoolByThread[threadIdx] = poolsWithThreads[poolIdx];
     }
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::ctor: end");
+}
+
+TSharedExecutorPool::~TSharedExecutorPool() {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::dtor start");
+    Threads.reset();
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::dtor end");
 }
 
 void TSharedExecutorPool::Init(const std::vector<IExecutorPool*>& pools, bool withThreads) {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::Init: start");
     std::vector<IExecutorPool*> poolByThread(SharedThreadCount);
     for (IExecutorPool* pool : pools) {
         Pools[pool->PoolId] = pool;
@@ -90,21 +103,25 @@ void TSharedExecutorPool::Init(const std::vector<IExecutorPool*>& pools, bool wi
             Threads[i].Thread.reset(
                 new TSharedExecutorThread(
                     -1,
-                nullptr,
-                &Threads[i],
-                PoolCount,
-                "SharedThread",
-                SoftProcessingDurationTs,
-                TimePerMailbox,
-                    EventsPerMailbox));
+                    ActorSystem,
+                    &Threads[i],
+                    PoolCount,
+                    "SharedThread",
+                    SoftProcessingDurationTs,
+                    TimePerMailbox,
+                    EventsPerMailbox
+                )
+            );
         }
     }
 }
 
 void TSharedExecutorPool::Prepare(TActorSystem* actorSystem, NSchedulerQueue::TReader** scheduleReaders, ui32* scheduleSz) {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::Prepare: start");
     ScheduleReaders.reset(new NSchedulerQueue::TReader[SharedThreadCount]);
     ScheduleWriters.reset(new NSchedulerQueue::TWriter[SharedThreadCount]);
 
+    ActorSystem = actorSystem;
     std::vector<IExecutorPool*> poolsBasic = actorSystem->GetBasicExecutorPools();
     Init(poolsBasic, true);
 
@@ -117,6 +134,7 @@ void TSharedExecutorPool::Prepare(TActorSystem* actorSystem, NSchedulerQueue::TR
 }
 
 void TSharedExecutorPool::Start() {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::Start: start");
     //ThreadUtilization = 0;
     //AtomicAdd(MaxUtilizationCounter, -(i64)GetCycleCountFast());
 
@@ -126,19 +144,24 @@ void TSharedExecutorPool::Start() {
 }
 
 void TSharedExecutorPool::PrepareStop() {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::PrepareStop: start");
     for (i16 i = 0; i != SharedThreadCount; ++i) {
         Threads[i].Thread->StopFlag = true;
         Threads[i].Interrupt();
     }
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::PrepareStop: end");
 }
 
 void TSharedExecutorPool::Shutdown() {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::Shutdown: start");
     for (i16 i = 0; i != SharedThreadCount; ++i) {
         Threads[i].Thread->Join();
     }
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::Shutdown: end");
 }
 
 bool TSharedExecutorPool::Cleanup() {
+    ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TSharedExecutorPool::Cleanup");
     return true;
 }
 
@@ -151,6 +174,7 @@ TSharedExecutorThreadCtx* TSharedExecutorPool::GetSharedThread(i16 pool) {
 }
 
 i16 TSharedExecutorPool::ReturnOwnHalfThread(i16 pool) {
+    ACTORLIB_DEBUG(EDebugLevel::Executor, "TSharedExecutorPool::ReturnOwnHalfThread: start");
     i16 threadIdx = State.ThreadByPool[pool];
     IExecutorPool* borrowingPool = Threads[threadIdx].ExecutorPools[1].exchange(nullptr, std::memory_order_acq_rel);
     Y_ABORT_UNLESS(borrowingPool);
@@ -163,6 +187,7 @@ i16 TSharedExecutorPool::ReturnOwnHalfThread(i16 pool) {
 }
 
 i16 TSharedExecutorPool::ReturnBorrowedHalfThread(i16 pool) {
+    ACTORLIB_DEBUG(EDebugLevel::Executor, "TSharedExecutorPool::ReturnBorrowedHalfThread: start");
     i16 threadIdx = State.BorrowedThreadByPool[pool];
     IExecutorPool* borrowingPool = Threads[threadIdx].ExecutorPools[1].exchange(nullptr, std::memory_order_acq_rel);
     Y_ABORT_UNLESS(borrowingPool);
@@ -174,6 +199,7 @@ i16 TSharedExecutorPool::ReturnBorrowedHalfThread(i16 pool) {
 }
 
 void TSharedExecutorPool::GiveHalfThread(i16 from, i16 to) {
+    ACTORLIB_DEBUG(EDebugLevel::Executor, "TSharedExecutorPool::GiveHalfThread: start");
     if (from == to) {
         return;
     }

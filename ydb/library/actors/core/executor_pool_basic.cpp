@@ -7,6 +7,7 @@
 #include "executor_thread_ctx.h"
 #include "probes.h"
 #include "mailbox.h"
+#include "debug.h"
 #include "thread_context.h"
 #include <atomic>
 #include <memory>
@@ -19,11 +20,13 @@
 
 namespace NActors {
 
+    namespace {
 #ifdef ACTOR_SANITIZER
-    constexpr bool DebugMode = true;
+        constexpr bool DebugMode = true;
 #else
-    constexpr bool DebugMode = false;
+        constexpr bool DebugMode = false;
 #endif
+    }
 
 
     LWTRACE_USING(ACTORLIB_PROVIDER);
@@ -75,9 +78,11 @@ namespace NActors {
             .HasSharedThread = hasOwnSharedThread,
         }, harmonizer, jail)
     {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::ctor ", poolName, ' ', threads);
         if (affinity != nullptr) {
             delete affinity;
         }
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::ctor end");
     }
 
     TBasicExecutorPool::TBasicExecutorPool(const TBasicExecutorPoolConfig& cfg, IHarmonizer *harmonizer, TExecutorPoolJail *jail)
@@ -85,7 +90,6 @@ namespace NActors {
         , DefaultSpinThresholdCycles(cfg.SpinThreshold * NHPTimer::GetCyclesPerSecond() * 0.000001) // convert microseconds to cycles
         , SpinThresholdCycles(DefaultSpinThresholdCycles)
         , SpinThresholdCyclesPerThread(new NThreading::TPadded<std::atomic<ui64>>[cfg.Threads])
-        , Threads(new NThreading::TPadded<TExecutorThreadCtx>[cfg.Threads])
         , WaitingStats(new TWaitingStats<ui64>[cfg.Threads])
         , PoolName(cfg.PoolName)
         , TimePerMailbox(cfg.TimePerMailbox)
@@ -102,6 +106,7 @@ namespace NActors {
         , Jail(jail)
         , ActorSystemProfile(cfg.ActorSystemProfile)
     {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::ctor start ", cfg.PoolName, ' ', cfg.Threads);
         Y_UNUSED(Jail, SoftProcessingDurationTs);
         for (ui32 idx = 0; idx < MaxSharedThreadsForPool; ++idx) {
             SharedThreads[idx].store(nullptr, std::memory_order_release);
@@ -153,13 +158,17 @@ namespace NActors {
         MinThreadCount = MinFullThreadCount + HasOwnSharedThread;
         MaxThreadCount = MaxFullThreadCount + HasOwnSharedThread;
 
+        Threads.Reset(new NThreading::TPadded<TExecutorThreadCtx>[MaxFullThreadCount]);
         if constexpr (DebugMode) {
             Sanitizer.reset(new TBasicExecutorPoolSanitizer(this));
         }
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::ctor end");
     }
 
     TBasicExecutorPool::~TBasicExecutorPool() {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::dtor start");
         Threads.Destroy();
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::dtor end");
     }
 
     void TBasicExecutorPool::AskToGoToSleep(bool *needToWait, bool *needToBlock) {
@@ -437,6 +446,7 @@ namespace NActors {
 
     void TBasicExecutorPool::Prepare(TActorSystem* actorSystem, NSchedulerQueue::TReader** scheduleReaders, ui32* scheduleSz) {
         TAffinityGuard affinityGuard(Affinity());
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Prepare: start");
 
         ActorSystem = actorSystem;
 
@@ -463,11 +473,12 @@ namespace NActors {
 
         *scheduleReaders = ScheduleReaders.Get();
         *scheduleSz = MaxFullThreadCount + 2;
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Prepare: end");
     }
 
     void TBasicExecutorPool::Start() {
         TAffinityGuard affinityGuard(Affinity());
-
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Start: start ", PoolName, ' ', MaxFullThreadCount);
         ThreadUtilization = 0;
         AtomicAdd(MaxUtilizationCounter, -(i64)GetCycleCountFast());
 
@@ -478,25 +489,34 @@ namespace NActors {
         if constexpr (DebugMode) {
             Sanitizer->Start();
         }
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Start: end");
     }
 
     void TBasicExecutorPool::PrepareStop() {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::PrepareStop: start ", PoolName, ' ', MaxFullThreadCount);
         StopFlag.store(true, std::memory_order_release);
         for (i16 i = 0; i != MaxFullThreadCount; ++i) {
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::PrepareStop: stop flag ", i);
             Threads[i].Thread->StopFlag.store(true, std::memory_order_release);
             Threads[i].Interrupt();
         }
         if constexpr (DebugMode) {
             Sanitizer->Stop();
         }
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::PrepareStop: end");
     }
 
     void TBasicExecutorPool::Shutdown() {
-        for (i16 i = 0; i != MaxFullThreadCount; ++i)
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Shutdown: start ", PoolName, ' ', MaxFullThreadCount);
+        for (i16 i = 0; i != MaxFullThreadCount; ++i) {
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Shutdown: join ", i);
             Threads[i].Thread->Join();
+        }
         if constexpr (DebugMode) {
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Shutdown: join sanitizer");
             Sanitizer->Join();
         }
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TBasicExecutorPool::Shutdown: end");
     }
 
     void TBasicExecutorPool::Schedule(TInstant deadline, TAutoPtr<IEventHandle> ev, ISchedulerCookie* cookie, TWorkerId workerId) {

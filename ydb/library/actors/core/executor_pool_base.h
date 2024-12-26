@@ -52,6 +52,7 @@ namespace NActors {
         using TUnorderedCacheActivationQueue = TUnorderedCache<ui32, 512, 4>;
 
         const i16 PoolThreads;
+        const bool UseRingQueue;
         TIntrusivePtr<TAffinity> ThreadsAffinity;
         TAtomic Semaphore = 0;
         std::variant<TUnorderedCacheActivationQueue, TRingActivationQueue> Activations;

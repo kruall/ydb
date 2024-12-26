@@ -11,6 +11,7 @@
 namespace NActors {
     struct TActorSystemSetup;
     class TExecutorPoolJail;
+    class TUnitedExecutorPool;
 
     class TCpuManager : public TNonCopyable {
         const ui32 ExecutorPoolCount;
@@ -18,6 +19,7 @@ namespace NActors {
         std::unique_ptr<IHarmonizer> Harmonizer;
         std::unique_ptr<ISharedExecutorPool> Shared;
         std::unique_ptr<TExecutorPoolJail> Jail;
+        std::unique_ptr<TUnitedExecutorPool> United;
         TCpuManagerConfig Config;
 
     public:
@@ -25,6 +27,7 @@ namespace NActors {
         ~TCpuManager();
 
         void Setup();
+        void SetupUnited();
         void PrepareStart(TVector<NSchedulerQueue::TReader*>& scheduleReaders, TActorSystem* actorSystem);
         void Start();
         void PrepareStop();

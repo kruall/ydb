@@ -1,4 +1,5 @@
 #include "defs.h"
+#include "debug.h"
 #include "activity_guard.h"
 #include "actorsystem.h"
 #include "callstack.h"
@@ -85,11 +86,14 @@ namespace NActors {
         , StopExecuted(false)
         , CleanupExecuted(false)
     {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TActorSystem::TActorSystem");
         ServiceMap.Reset(new TServiceMap());
     }
 
     TActorSystem::~TActorSystem() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TActorSystem::~TActorSystem: start");
         Cleanup();
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TActorSystem::~TActorSystem: end");
     }
 
     template <TActorSystem::TEPSendFunction EPSpecificSend>

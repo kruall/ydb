@@ -2,9 +2,11 @@
 #include "executor_pool_jail.h"
 #include "mon_stats.h"
 #include "probes.h"
+#include "debug.h"
 
 #include "executor_pool_basic.h"
 #include "executor_pool_io.h"
+#include "executor_pool_united.h"
 
 namespace NActors {
     LWTRACE_USING(ACTORLIB_PROVIDER);
@@ -23,9 +25,57 @@ namespace NActors {
     TCpuManager::~TCpuManager() {
     }
 
+    void TCpuManager::SetupUnited() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::SetupUnited: start");
+        TVector<TPoolInfo> poolInfos;
+
+        std::vector<i16> poolIds(Config.Basic.size());
+        std::iota(poolIds.begin(), poolIds.end(), 0);
+        std::sort(poolIds.begin(), poolIds.end(), [&](i16 a, i16 b) {
+            if (Config.Basic[a].Priority != Config.Basic[b].Priority) {
+                return Config.Basic[a].Priority > Config.Basic[b].Priority;
+            }
+            return Config.Basic[a].PoolId < Config.Basic[b].PoolId;
+        });
+
+        for (ui32 i = 0; i < Config.Basic.size(); ++i) {
+            if (Config.Basic[poolIds[i]].MaxThreadCount > 0) {
+                poolInfos.push_back(TPoolInfo{static_cast<i16>(Config.Basic[poolIds[i]].PoolId), Config.Basic[poolIds[i]].DefaultThreadCount, Config.Basic[poolIds[i]].MaxThreadCount, Config.Basic[poolIds[i]].PoolName});
+            } else {
+                poolInfos.push_back(TPoolInfo{static_cast<i16>(Config.Basic[poolIds[i]].PoolId), static_cast<i16>(Config.Basic[poolIds[i]].Threads), static_cast<i16>(Config.Basic[poolIds[i]].Threads), Config.Basic[poolIds[i]].PoolName});
+            }
+        }
+        for (ui32 i = 0; i < Config.IO.size(); ++i) {
+            poolInfos.push_back(TPoolInfo{static_cast<i16>(Config.IO[i].PoolId), 0, 0, Config.IO[i].PoolName});
+        }
+
+        Config.United.SoftProcessingDurationTs = Us2Ts(100'000);
+        if (Config.Basic.size() > 0 && Config.Basic[0].UseRingQueue) {
+            Config.United.UseRingQueue = true;
+        }
+        United = std::make_unique<TUnitedExecutorPool>(Config.United, poolInfos);
+        Executors.Reset(new TAutoPtr<IExecutorPool>[ExecutorPoolCount]);
+        for (ui32 i = 0; i < Config.Basic.size(); ++i) {
+            ui32 id = Config.Basic[poolIds[i]].PoolId;
+            Executors[id].Reset(United->MakePseudoPool(id).release());
+        }
+        for (ui32 i = 0; i < Config.IO.size(); ++i) {
+            Executors[Config.IO[i].PoolId].Reset(CreateExecutorPool(Config.IO[i].PoolId));
+        }
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::SetupUnited: end");
+    }
+
     void TCpuManager::Setup() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Setup: start");
         TAffinity available;
         available.Current();
+
+        Config.United.UseUnited = false;
+        Config.Shared.SoftProcessingDurationTs = Us2Ts(10'000);
+        if (Config.United.UseUnited) {
+            SetupUnited();
+            return;
+        }
 
         if (Config.Jail) {
             Jail = std::make_unique<TExecutorPoolJail>(ExecutorPoolCount, *Config.Jail);
@@ -54,9 +104,11 @@ namespace NActors {
                 Harmonizer->AddPool(Executors[excIdx].Get());
             }
         }
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Setup: end");
     }
 
     void TCpuManager::PrepareStart(TVector<NSchedulerQueue::TReader*>& scheduleReaders, TActorSystem* actorSystem) {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::PrepareStart: start");
         NSchedulerQueue::TReader* readers;
         ui32 readersCount = 0;
         if (Shared) {
@@ -66,53 +118,63 @@ namespace NActors {
             }
         }
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
-            ui32 readersCount = 0;
+            Y_ABORT_UNLESS(Executors[excIdx].Get() != nullptr, "Executor pool is nullptr excIdx %" PRIu32, excIdx);
             Executors[excIdx]->Prepare(actorSystem, &readers, &readersCount);
             for (ui32 i = 0; i != readersCount; ++i, ++readers) {
                 scheduleReaders.push_back(readers);
             }
         }
+        if (United) {
+            United->Prepare(actorSystem, &readers, &readersCount);
+            for (ui32 i = 0; i != readersCount; ++i, ++readers) {
+                scheduleReaders.push_back(readers);
+            }
+        }
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::PrepareStart: end");
     }
 
     void TCpuManager::Start() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Start: start");
         if (Shared) {
             Shared->Start();
         }
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
             Executors[excIdx]->Start();
         }
+        if (United) {
+            United->Start();
+        }
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Start: end");
     }
 
     void TCpuManager::PrepareStop() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::PrepareStop: start");
+        if (United) {
+            United->PrepareStop();
+        }
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
             Executors[excIdx]->PrepareStop();
         }
         if (Shared) {
             Shared->PrepareStop();
         }
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::PrepareStop: end");
     }
 
     void TCpuManager::Shutdown() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Shutdown: start");
+        if (United) {
+            United->Shutdown();
+        }
         for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
             Executors[excIdx]->Shutdown();
         }
         if (Shared) {
             Shared->Shutdown();
         }
-        for (ui32 round = 0, done = 0; done < ExecutorPoolCount && round < 3; ++round) {
-            done = 0;
-            for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
-                if (Executors[excIdx]->Cleanup()) {
-                    ++done;
-                }
-            }
+        if (United) {
+            United->Shutdown();
         }
-        if (Shared) {
-            Shared->Cleanup();
-        }
-    }
-
-    void TCpuManager::Cleanup() {
         for (ui32 round = 0, done = 0; done < ExecutorPoolCount; ++round) {
             Y_ABORT_UNLESS(round < 10, "actorsystem cleanup could not be completed in 10 rounds");
             done = 0;
@@ -125,10 +187,36 @@ namespace NActors {
         if (Shared) {
             Shared->Cleanup();
         }
-        Executors.Destroy();
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Shutdown: end");
+    }
+
+    void TCpuManager::Cleanup() {
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Cleanup: start");
+        if (United) {
+            United->Cleanup();
+        }
+        for (ui32 round = 0, done = 0; done < ExecutorPoolCount; ++round) {
+            Y_ABORT_UNLESS(round < 10, "actorsystem cleanup could not be completed in 10 rounds");
+            done = 0;
+            for (ui32 excIdx = 0; excIdx != ExecutorPoolCount; ++excIdx) {
+                if (Executors[excIdx]->Cleanup()) {
+                    ++done;
+                }
+            }
+        }
+        if (Shared) {
+            Shared->Cleanup();
+        }
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Cleanup: Destroy");
+        if (United) {
+            United.reset();
+        }
         if (Shared) {
             Shared.reset();
         }
+        Executors.Destroy();
+
+        ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::Cleanup: end");
     }
 
     IExecutorPool* TCpuManager::CreateExecutorPool(ui32 poolId) {

@@ -34,6 +34,16 @@ namespace NActors {
         bool UseRingQueue = false;
     };
 
+    struct TUnitedExecutorPoolConfig {
+        bool UseUnited = false;
+        ui64 SpinThreshold = 100;
+        TCpuMask Affinity; // Executor thread affinity
+        TDuration TimePerMailbox = TBasicExecutorPoolConfig::DEFAULT_TIME_PER_MAILBOX;
+        ui32 EventsPerMailbox = TBasicExecutorPoolConfig::DEFAULT_EVENTS_PER_MAILBOX;
+        i16 SoftProcessingDurationTs = Us2Ts(10000);
+        bool UseRingQueue = false;
+    };
+
     struct TSharedExecutorPoolConfig {
         ui32 Threads = 1;
         ui64 SpinThreshold = 100;
@@ -68,6 +78,7 @@ namespace NActors {
         TVector<TSelfPingInfo> PingInfoByPool;
         TSharedExecutorPoolConfig Shared;
         std::optional<TExecutorPoolJailConfig> Jail;
+        TUnitedExecutorPoolConfig United;
 
         ui32 GetExecutorsCount() const {
             return Basic.size() + IO.size();

@@ -35,6 +35,7 @@ LWTRACE_USING(ACTORLIB_PROVIDER);
 
 class THarmonizer: public IHarmonizer {
 private:
+    std::atomic<ui64> Iteration = 0;
     std::atomic<bool> IsDisabled = false;
     TSpinLock Lock;
     std::atomic<ui64> NextHarmonizeTs = 0;
@@ -142,6 +143,8 @@ void THarmonizer::ProcessStarvedState() {
             pool.ReturnedHalfThreadByStarvedState.fetch_add(1, std::memory_order_relaxed);
             Y_ABORT_UNLESS(borrowedPool != -1);
             Pools[borrowedPool]->GivenHalfThreadByOtherStarvedState.fetch_add(1, std::memory_order_relaxed);
+            SharedInfo.HasBorrowedSharedThread[borrowedPool] = false;
+            SharedInfo.HasSharedThreadWhichWasNotBorrowed[poolIdx] = true;
         } else {
             HARMONIZER_DEBUG_PRINT("no own half thread", poolIdx, "has shared thread", SharedInfo.HasSharedThread[poolIdx], "has shared thread which was not borrowed", SharedInfo.HasSharedThreadWhichWasNotBorrowed[poolIdx]);
         }
@@ -183,6 +186,8 @@ void THarmonizer::ProcessNeedyState() {
             ProcessingBudget -= 0.5;
             pool.ReceivedHalfThreadByNeedyState.fetch_add(1, std::memory_order_relaxed);
             Pools[poolWithHalfThread]->GivenHalfThreadByOtherNeedyState.fetch_add(1, std::memory_order_relaxed);
+            SharedInfo.HasSharedThreadWhichWasNotBorrowed[poolWithHalfThread] = false;
+            SharedInfo.HasBorrowedSharedThread[needyPoolIdx] = true;
         } else if (ProcessingBudget >= 1.0) {
             if (threadCount + 1 <= pool.MaxFullThreadCount) {
                 pool.IncreasingThreadsByNeedyState.fetch_add(1, std::memory_order_relaxed);
@@ -264,6 +269,8 @@ void THarmonizer::ProcessHoggishState() {
             pool.GivenHalfThreadByHoggishState.fetch_add(1, std::memory_order_relaxed);
             Y_ABORT_UNLESS(originalPool != -1);
             Pools[originalPool]->ReturnedHalfThreadByOtherHoggishState.fetch_add(1, std::memory_order_relaxed);
+            SharedInfo.HasSharedThreadWhichWasNotBorrowed[originalPool] = true;
+            SharedInfo.HasBorrowedSharedThread[hoggishPoolIdx] = false;
         }
         if (pool.BasicPool && pool.LocalQueueSize > NFeatures::TLocalQueuesFeatureFlags::MIN_LOCAL_QUEUE_SIZE) {
             pool.LocalQueueSize = std::min<ui16>(NFeatures::TLocalQueuesFeatureFlags::MIN_LOCAL_QUEUE_SIZE, pool.LocalQueueSize / 2);
@@ -279,8 +286,9 @@ void THarmonizer::ProcessHoggishState() {
 }
 
 void THarmonizer::HarmonizeImpl(ui64 ts) {
-    HARMONIZER_DEBUG_PRINT("HarmonizeImpl");
+    HARMONIZER_DEBUG_PRINT("HarmonizeImpl", "Iteration", Iteration.fetch_add(1, std::memory_order_relaxed));
     Y_UNUSED(ts);
+
 
     ProcessWaitingStats();
 

@@ -218,6 +218,7 @@ namespace NActors {
     }
 
     TMonotonic TActivationContext::Monotonic() {
+        Y_ABORT_UNLESS(TlsActivationContext->ExecutorThread.ActorSystem != nullptr);
         return TlsActivationContext->ExecutorThread.ActorSystem->Monotonic();
     }
 

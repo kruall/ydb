@@ -1,5 +1,6 @@
 #include "mailbox_lockfree.h"
 #include "actor.h"
+#include "debug.h"
 #include "executor_pool.h"
 
 namespace NActors {
@@ -584,36 +585,50 @@ namespace NActors {
 
     TMailboxCache::TMailboxCache(TMailboxTable* table)
         : Table(table)
-    {}
+    {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::ctor");
+    }
 
     TMailboxCache::~TMailboxCache() {
+        //ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::dtor start");
         if (BackupBlock) {
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::dtor free backup block: start");
             Table->FreeBlock(BackupBlock, BackupSize);
             BackupBlock = nullptr;
             BackupSize = 0;
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::dtor free backup block: end");
         }
 
         if (CurrentBlock) {
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::dtor free current block: start");
             Table->FreeBlock(CurrentBlock, CurrentSize);
             CurrentBlock = nullptr;
             CurrentSize = 0;
+            ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::dtor free current block: end");
         }
+        //ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TMailboxCache::dtor end");
     }
 
     void TMailboxCache::Switch(TMailboxTable* table) {
+        ACTORLIB_DEBUG(EDebugLevel::Executor, "TMailboxCache::Switch start");
         if (Table != table) {
             if (BackupBlock) {
+                ACTORLIB_DEBUG(EDebugLevel::Executor, "TMailboxCache::Switch free backup block: start");
                 Table->FreeBlock(BackupBlock, BackupSize);
                 BackupBlock = nullptr;
                 BackupSize = 0;
+                ACTORLIB_DEBUG(EDebugLevel::Executor, "TMailboxCache::Switch free backup block: end");
             }
             if (CurrentBlock) {
+                ACTORLIB_DEBUG(EDebugLevel::Executor, "TMailboxCache::Switch free current block: start");
                 Table->FreeBlock(CurrentBlock, CurrentSize);
                 CurrentBlock = nullptr;
                 CurrentSize = 0;
+                ACTORLIB_DEBUG(EDebugLevel::Executor, "TMailboxCache::Switch free current block: end");
             }
             Table = table;
         }
+        ACTORLIB_DEBUG(EDebugLevel::Executor, "TMailboxCache::Switch end");
     }
 
     TMailbox* TMailboxCache::Allocate() {
@@ -646,7 +661,9 @@ namespace NActors {
     }
 
     void TMailboxCache::Free(TMailbox* mailbox) {
-        Y_ABORT_UNLESS(Table);
+        if (!Table) {
+            return;
+        }
 
         if (CurrentSize >= TMailboxTable::BlockSize) {
             if (BackupBlock) {

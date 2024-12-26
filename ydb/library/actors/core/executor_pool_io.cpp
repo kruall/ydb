@@ -2,6 +2,7 @@
 #include "actor.h"
 #include "config.h"
 #include "mailbox.h"
+#include "debug.h"
 #include <ydb/library/actors/util/affinity.h>
 #include <ydb/library/actors/util/datetime.h>
 
@@ -21,7 +22,9 @@ namespace NActors {
             cfg.UseRingQueue
         )
     {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::ctor ", cfg.PoolName, ' ', cfg.Threads);
         Harmonizer = harmonizer;
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::ctor end");
     }
 
     TIOExecutorPool::~TIOExecutorPool() {
@@ -104,6 +107,7 @@ namespace NActors {
     }
 
     void TIOExecutorPool::Prepare(TActorSystem* actorSystem, NSchedulerQueue::TReader** scheduleReaders, ui32* scheduleSz) {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::Prepare: start");
         TAffinityGuard affinityGuard(Affinity());
 
         ActorSystem = actorSystem;
@@ -116,26 +120,32 @@ namespace NActors {
 
         *scheduleReaders = &ScheduleQueue->Reader;
         *scheduleSz = 1;
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::Prepare: end");
     }
 
     void TIOExecutorPool::Start() {
         TAffinityGuard affinityGuard(Affinity());
-
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::Start: start");
         for (i16 i = 0; i != PoolThreads; ++i)
             Threads[i].Thread->Start();
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::Start: end");
     }
 
     void TIOExecutorPool::PrepareStop() {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::PrepareStop: start");
         StopFlag.store(true, std::memory_order_release);
         for (i16 i = 0; i != PoolThreads; ++i) {
             Threads[i].Thread->StopFlag = true;
             Threads[i].WaitingPad.Interrupt();
         }
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::PrepareStop: end");
     }
 
     void TIOExecutorPool::Shutdown() {
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::Shutdown: start");
         for (i16 i = 0; i != PoolThreads; ++i)
             Threads[i].Thread->Join();
+        ACTORLIB_DEBUG(EDebugLevel::ExecutorPool, "TIOExecutorPool::Shutdown: end");
     }
 
     void TIOExecutorPool::GetCurrentStats(TExecutorPoolStats& poolStats, TVector<TExecutorThreadStats>& statsCopy) const {
