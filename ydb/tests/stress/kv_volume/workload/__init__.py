@@ -570,9 +570,11 @@ class Worker:
         await self.write_initial_data(initial_dc)
 
         end_time = datetime.now() + timedelta(seconds=self.workload.duration + 2)
+        scheduler_task = None
+        stats_task = None
 
         if self.show_stats:
-            asyncio.create_task(self._stats_collector())
+            stats_task = asyncio.create_task(self._stats_collector())
 
         period_actions = {}
         children_map = defaultdict(set)
@@ -607,58 +609,99 @@ class Worker:
                     continue
                 await self.event_queue.put(('run', action_name, dc))
 
-        asyncio.create_task(scheduler())
-
         id_to_action_name = {}
         id_to_tasks = {}
+        failure = None
+
+        def handle_task_done(source_id, task):
+            if task.cancelled():
+                return
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                self.event_queue.put_nowait(('task_error', source_id, exc))
+
+        scheduler_task = asyncio.create_task(scheduler())
+        scheduler_task.add_done_callback(lambda task: handle_task_done('scheduler', task))
+
+        if stats_task is not None:
+            stats_task.add_done_callback(lambda task: handle_task_done('stats_collector', task))
 
         last_ts = {}
 
-        while (now := datetime.now()) < end_time:
-            try:
-                timeout = (end_time - now).total_seconds()
-                boxed = await asyncio.wait_for(self.event_queue.get(), timeout=timeout)
-            except asyncio.QueueEmpty:
-                break
-            except asyncio.TimeoutError:
-                break
-            if boxed is None:
-                break
-            command, q, dc = boxed
-            if command == 'end':
-                id = q
-                name = id_to_action_name[id]
-                for child in children_map[name]:
-                    await self.event_queue.put(('run', child, Worker.LayeredDataContext(dc)))
-                del id_to_action_name[id]
-                del id_to_tasks[id]
-            elif command == 'run':
-                name = q
-                instance_id = self.generate_instance_id()
-                runner = Worker.ActionRunner(
-                    self.actions[name],
-                    self.workload,
-                    self,
-                    semaphores.get(name),
-                    instance_id,
-                    self.worker_partition_id,
-                    data_context=dc,
-                )
-                id_to_action_name[instance_id] = name
-                task = asyncio.create_task(runner.run())
-                id_to_tasks[instance_id] = task
-                if name in period_actions:
-                    ts = last_ts.get(name, now)
-                    scheduled_count[name] -= 1
-                    while (ts <= now or not scheduled_count[name]) and scheduled_count[name] < 5:
-                        ts += timedelta(microseconds=max(1, period_actions[name]))
-                        await self.scheduled_queue.put((ts, name, dc.clear_clone()))
-                        scheduled_count[name] += 1
-                    last_ts[name] = ts
+        try:
+            while (now := datetime.now()) < end_time:
+                try:
+                    timeout = (end_time - now).total_seconds()
+                    boxed = await asyncio.wait_for(self.event_queue.get(), timeout=timeout)
+                except asyncio.QueueEmpty:
+                    break
+                except asyncio.TimeoutError:
+                    break
+                if boxed is None:
+                    break
+                command, q, dc = boxed
+                if command == 'task_error':
+                    failure = dc
+                    break
+                if command == 'end':
+                    id = q
+                    if id not in id_to_action_name:
+                        continue
+                    name = id_to_action_name[id]
+                    for child in children_map[name]:
+                        await self.event_queue.put(('run', child, Worker.LayeredDataContext(dc)))
+                    del id_to_action_name[id]
+                    del id_to_tasks[id]
+                elif command == 'run':
+                    name = q
+                    instance_id = self.generate_instance_id()
+                    runner = Worker.ActionRunner(
+                        self.actions[name],
+                        self.workload,
+                        self,
+                        semaphores.get(name),
+                        instance_id,
+                        self.worker_partition_id,
+                        data_context=dc,
+                    )
+                    id_to_action_name[instance_id] = name
+                    task = asyncio.create_task(runner.run())
+                    task.add_done_callback(lambda task, iid=instance_id: handle_task_done(iid, task))
+                    id_to_tasks[instance_id] = task
+                    if name in period_actions:
+                        ts = last_ts.get(name, now)
+                        scheduled_count[name] -= 1
+                        while (ts <= now or not scheduled_count[name]) and scheduled_count[name] < 5:
+                            ts += timedelta(microseconds=max(1, period_actions[name]))
+                            await self.scheduled_queue.put((ts, name, dc.clear_clone()))
+                            scheduled_count[name] += 1
+                        last_ts[name] = ts
+        finally:
+            to_await = []
+            if scheduler_task is not None:
+                if not scheduler_task.done():
+                    scheduler_task.cancel()
+                to_await.append(scheduler_task)
+            if stats_task is not None:
+                if not stats_task.done():
+                    stats_task.cancel()
+                to_await.append(stats_task)
+            for task in id_to_tasks.values():
+                if not task.done():
+                    task.cancel()
+                to_await.append(task)
+            if to_await:
+                await asyncio.gather(*to_await, return_exceptions=True)
+            if self._client is not None:
+                await self._client.aclose()
 
-        await self.client.aclose()
         if self.verbose:
             print(f"Worker {self.worker_id}: finished arun", file=sys.stderr)
+        if failure is not None:
+            raise failure
 
     def run(self):
         asyncio.run(self.arun())
