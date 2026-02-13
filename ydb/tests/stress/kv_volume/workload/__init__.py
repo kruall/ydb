@@ -595,7 +595,7 @@ class Worker:
                 try:
                     timeout = (end_time - now).total_seconds()
                     boxed = await asyncio.wait_for(self.scheduled_queue.get(), timeout=timeout)
-                except asyncio.QueueEmpty:
+                except asyncio.TimeoutError:
                     break
                 now = datetime.now()
                 if boxed is None:
@@ -725,6 +725,106 @@ class YdbKeyValueVolumeWorkload(WorkloadBase):
     def _drop_volume(self, client):
         return client.drop_tablets(self._volume_path())
 
+    def _validate_config(self):
+        errors = []
+
+        if not self.config.volume_config.path:
+            errors.append("volume_config.path must be set")
+        if self.config.volume_config.partition_count <= 0:
+            errors.append("volume_config.partition_count must be > 0")
+
+        actions = list(self.config.actions)
+        action_by_name = {}
+        duplicate_names = set()
+        for idx, action in enumerate(actions):
+            if not action.name:
+                errors.append(f"actions[{idx}] has empty name")
+                continue
+            if action.name in action_by_name:
+                duplicate_names.add(action.name)
+            else:
+                action_by_name[action.name] = action
+
+        for name in sorted(duplicate_names):
+            errors.append(f"duplicate action name: '{name}'")
+
+        for action in actions:
+            if not action.name:
+                continue
+            if action.HasField('parent_action'):
+                parent_name = action.parent_action
+                if not parent_name:
+                    errors.append(f"action '{action.name}' has empty parent_action")
+                elif parent_name not in action_by_name:
+                    errors.append(
+                        f"action '{action.name}' references unknown parent_action '{parent_name}'"
+                    )
+                elif parent_name == action.name:
+                    errors.append(f"action '{action.name}' references itself as parent_action")
+
+        allowed_sources_cache = {}
+        recursion_stack = set()
+
+        def get_allowed_sources(action_name):
+            if action_name in allowed_sources_cache:
+                return allowed_sources_cache[action_name]
+            if action_name in recursion_stack:
+                errors.append(
+                    f"cycle in parent_action chain detected at action '{action_name}'"
+                )
+                return {'__initial__', action_name}
+
+            recursion_stack.add(action_name)
+            allowed = {'__initial__', action_name}
+            action = action_by_name.get(action_name)
+            if action and action.HasField('parent_action'):
+                parent_name = action.parent_action
+                if parent_name in action_by_name:
+                    allowed.update(get_allowed_sources(parent_name))
+
+            recursion_stack.discard(action_name)
+            allowed_sources_cache[action_name] = allowed
+            return allowed
+
+        for action_name in action_by_name:
+            get_allowed_sources(action_name)
+
+        for action in actions:
+            if not action.name or not action.HasField('action_data_mode'):
+                continue
+            mode = action.action_data_mode.WhichOneof('Mode')
+            if mode != 'from_prev_actions':
+                continue
+
+            referenced_actions = list(action.action_data_mode.from_prev_actions.action_name)
+            if not referenced_actions:
+                errors.append(
+                    f"action '{action.name}' uses from_prev_actions with empty action_name list"
+                )
+                continue
+
+            allowed_sources = allowed_sources_cache.get(
+                action.name, {'__initial__', action.name}
+            )
+            for source_name in referenced_actions:
+                if source_name == '__initial__':
+                    continue
+                if source_name not in action_by_name:
+                    errors.append(
+                        f"action '{action.name}' references unknown action '{source_name}' "
+                        "in from_prev_actions"
+                    )
+                    continue
+                if source_name not in allowed_sources:
+                    errors.append(
+                        f"action '{action.name}' references action '{source_name}' in "
+                        "from_prev_actions, but it is not in this action lineage"
+                    )
+
+        if errors:
+            details = '\n'.join(f"- {error}" for error in errors)
+            raise ValueError(f"Invalid KeyValueVolumeStressLoad config:\n{details}")
+
     def _stats_listener(self):
         start_messages = 0
         stats_accumulator = defaultdict(int)
@@ -806,6 +906,8 @@ class YdbKeyValueVolumeWorkload(WorkloadBase):
         print(separator)
 
     def _pre_start(self):
+        self._validate_config()
+
         if self.verbose:
             print(
                 f"Initializing KeyValue volume: endpoint={self.fqdn}:{self.port}, database={self.database}, path={self._volume_path()}",
@@ -936,13 +1038,11 @@ class ConfigBuilder:
         self.prepared_action.action_data_mode.from_prev_actions.CopyFrom(mode)
 
     @chained_method
-    def set_periodicity_for_prepared_action(self, period_us=None, worker_max_in_flight=None, global_max_in_flight=None):
+    def set_periodicity_for_prepared_action(self, period_us=None, worker_max_in_flight=None):
         if period_us is not None:
             self.prepared_action.period_us = period_us
         if worker_max_in_flight is not None:
             self.prepared_action.worker_max_in_flight = worker_max_in_flight
-        if global_max_in_flight is not None:
-            self.prepared_action.global_max_in_flight = global_max_in_flight
 
     @chained_method
     def init_initial_data(self):
