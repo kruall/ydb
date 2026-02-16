@@ -57,6 +57,7 @@ private:
         ui32 Limit = 0;
         std::optional<ui32> ParentActionId;
         std::optional<ui32> SourceActionId;
+        TVector<ui32> WritePatternIndexByCommand;
     };
 
     struct alignas(64) TAlignedActionCounter {
@@ -135,11 +136,13 @@ private:
     bool ExecuteWriteCommand(
         const TString& actionName,
         const NKikimrKeyValue::ActionCommand_Write& writeCommand,
+        ui32 patternIndex,
         std::optional<ui32> actionStatsIndex,
         const TExecutionContextPtr& executionContext);
     void ExecuteWriteCommandAsync(
         const TString& actionName,
         const NKikimrKeyValue::ActionCommand_Write& writeCommand,
+        ui32 patternIndex,
         std::optional<ui32> actionStatsIndex,
         const TExecutionContextPtr& executionContext,
         TCommandDone done);
@@ -158,7 +161,6 @@ private:
         TCommandDone done);
     void ContinueDeleteCommand(const std::shared_ptr<TDeleteCommandState>& state);
     ui32 SelectPartitionId();
-    TString GetPatternData(ui32 size);
 
 private:
     const ui32 WorkerId_;
@@ -168,12 +170,12 @@ private:
     TRunStats& Stats_;
     TInitialLoadProgress* const InitialLoadProgress_;
     TWorkerLoadTracker* const WorkerLoadTracker_;
-    const volatile std::sig_atomic_t* const StopSignal_;
-    std::unique_ptr<IKeyValueClient> Client_;
+    alignas(64) const volatile std::sig_atomic_t* const StopSignal_;
+    alignas(64)std::unique_ptr<IKeyValueClient> Client_;
 
-    std::atomic<bool> StopRequested_ = false;
+    alignas(64) std::atomic<bool> StopRequested_ = false;
 
-    TKeyBucket WorkerDataStorage_;
+    alignas(64) TKeyBucket WorkerDataStorage_;
 
     TVector<TActionEntry> Actions_;
     THashMap<TString, ui32> ActionIdByName_;
@@ -185,9 +187,8 @@ private:
     std::unique_ptr<TActionSlotSync[]> ActionSlotSync_;
 
     std::unique_ptr<TActionPool> ActionPool_;
-
-    alignas(64) std::mutex PatternCacheMutex_;
-    alignas(64) THashMap<ui32, TString> PatternCache_;
+    TVector<TString> PatternsByIndex_;
+    TVector<ui32> InitialWritePatternIndices_;
 
     alignas(64) std::atomic<ui64> WriteKeyCounter_ = 0;
     alignas(64) std::atomic<ui64> ExecutionIdCounter_ = 1;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <limits>
 #include <random>
 #include <stdexcept>
 
@@ -19,6 +20,7 @@ namespace {
 
 constexpr ui32 DefaultActionMaxInFlight = 30;
 constexpr auto MaxNanoSleepChunk = std::chrono::milliseconds(1);
+constexpr ui32 InvalidPatternIndex = std::numeric_limits<ui32>::max();
 
 ui64 ToLatencyMs(std::chrono::steady_clock::duration duration) {
     const ui64 latencyUs = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
@@ -57,12 +59,30 @@ TWorker::TWorker(
     RunningByAction_ = std::make_unique<TAlignedActionCounter[]>(actionsCount);
     ActionSlotSync_ = std::make_unique<TActionSlotSync[]>(actionsCount);
 
+    THashMap<ui32, ui32> patternIndexBySize;
+    patternIndexBySize.reserve(actionsCount + Config_.initial_data().write_commands_size());
+    auto registerPatternIndex = [this, &patternIndexBySize](ui32 size) -> ui32 {
+        if (const auto it = patternIndexBySize.find(size); it != patternIndexBySize.end()) {
+            return it->second;
+        }
+
+        const ui32 patternIndex = static_cast<ui32>(PatternsByIndex_.size());
+        PatternsByIndex_.push_back(GeneratePatternData(size));
+        patternIndexBySize.emplace(size, patternIndex);
+        return patternIndex;
+    };
+
+    InitialWritePatternIndices_.reserve(Config_.initial_data().write_commands_size());
+    for (const auto& writeCommand : Config_.initial_data().write_commands()) {
+        InitialWritePatternIndices_.push_back(registerPatternIndex(writeCommand.size()));
+    }
+
     ui32 actionIndex = 0;
     for (const auto& action : Config_.actions()) {
         const ui32 limit = GetActionLimit(action);
         ActionCapacity_ += limit;
 
-        Actions_.push_back(TActionEntry{
+        TActionEntry actionEntry{
             .Action = &action,
             .Name = action.name(),
             .ActionId = actionIndex,
@@ -70,7 +90,18 @@ TWorker::TWorker(
             .Limit = limit,
             .ParentActionId = std::nullopt,
             .SourceActionId = std::nullopt,
-        });
+        };
+
+        const size_t commandCount = static_cast<size_t>(action.action_command_size());
+        actionEntry.WritePatternIndexByCommand.assign(commandCount, InvalidPatternIndex);
+        for (size_t commandIndex = 0; commandIndex < commandCount; ++commandIndex) {
+            const auto& command = action.action_command(static_cast<int>(commandIndex));
+            if (command.Command_case() == NKikimrKeyValue::ActionCommand::kWrite) {
+                actionEntry.WritePatternIndexByCommand[commandIndex] = registerPatternIndex(command.write().size());
+            }
+        }
+
+        Actions_.push_back(std::move(actionEntry));
         ActionIdByName_[action.name()] = actionIndex;
         ++actionIndex;
     }
@@ -498,9 +529,24 @@ void TWorker::ContinueAction(const std::shared_ptr<TActionExecutionState>& state
                 return;
             }
             case NKikimrKeyValue::ActionCommand::kWrite: {
+                const ui32 patternIndex = commandIndex < actionEntry.WritePatternIndexByCommand.size()
+                    ? actionEntry.WritePatternIndexByCommand[commandIndex]
+                    : InvalidPatternIndex;
+                if (patternIndex == InvalidPatternIndex) {
+                    Stats_.RecordError(
+                        "invalid_pattern_index",
+                        TStringBuilder()
+                            << "Action " << actionName
+                            << " has no precomputed pattern for write command " << commandIndex,
+                        state->ActionStatsIndex);
+                    ContinueAction(state);
+                    return;
+                }
+
                 ExecuteWriteCommandAsync(
                     actionName,
                     command.write(),
+                    patternIndex,
                     state->ActionStatsIndex,
                     state->ExecutionContext,
                     [this, state] {
@@ -585,12 +631,25 @@ void TWorker::DecreaseActiveActions() {
 }
 
 void TWorker::WriteInitialDataImpl() {
-    for (const auto& writeCommand : Config_.initial_data().write_commands()) {
+    const size_t commandCount = static_cast<size_t>(Config_.initial_data().write_commands_size());
+    for (size_t commandIndex = 0; commandIndex < commandCount; ++commandIndex) {
+        const auto& writeCommand = Config_.initial_data().write_commands(static_cast<int>(commandIndex));
         if (IsStopped()) {
             break;
         }
 
-        const bool success = ExecuteWriteCommand("__initial__", writeCommand, std::nullopt, nullptr);
+        const ui32 patternIndex = commandIndex < InitialWritePatternIndices_.size()
+            ? InitialWritePatternIndices_[commandIndex]
+            : InvalidPatternIndex;
+        bool success = false;
+        if (patternIndex == InvalidPatternIndex) {
+            Stats_.RecordError(
+                "invalid_pattern_index",
+                TStringBuilder() << "Initial write command " << commandIndex << " has no precomputed pattern");
+        } else {
+            success = ExecuteWriteCommand("__initial__", writeCommand, patternIndex, std::nullopt, nullptr);
+        }
+
         if (InitialLoadProgress_) {
             const ui64 bytes = static_cast<ui64>(writeCommand.size()) * writeCommand.count();
             InitialLoadProgress_->OnCommandFinished(bytes, success);
@@ -601,12 +660,25 @@ void TWorker::WriteInitialDataImpl() {
 bool TWorker::ExecuteWriteCommand(
     const TString& actionName,
     const NKikimrKeyValue::ActionCommand_Write& writeCommand,
+    ui32 patternIndex,
     std::optional<ui32> actionStatsIndex,
     const TExecutionContextPtr& executionContext)
 {
     if (writeCommand.count() == 0) {
         return true;
     }
+
+    if (patternIndex >= PatternsByIndex_.size()) {
+        Stats_.RecordError(
+            "invalid_pattern_index",
+            TStringBuilder()
+                << "write action=" << actionName
+                << " pattern_index=" << patternIndex
+                << " patterns_count=" << PatternsByIndex_.size(),
+            actionStatsIndex);
+        return false;
+    }
+    const TString& pattern = PatternsByIndex_[patternIndex];
 
     const ui32 partitionId = SelectPartitionId();
 
@@ -616,8 +688,7 @@ bool TWorker::ExecuteWriteCommand(
     for (ui32 i = 0; i < writeCommand.count(); ++i) {
         const ui64 keyId = WriteKeyCounter_.fetch_add(1, std::memory_order_relaxed) + 1;
         TString key = TStringBuilder() << actionName << "_" << WorkerId_ << "_" << keyId;
-        TString value = GetPatternData(writeCommand.size());
-        pairs.emplace_back(key, value);
+        pairs.emplace_back(std::move(key), pattern);
     }
 
     TString error;
@@ -633,7 +704,7 @@ bool TWorker::ExecuteWriteCommand(
     writtenKeys.reserve(pairs.size());
 
     for (const auto& [key, value] : pairs) {
-        const TKeyInfo keyInfo{partitionId, static_cast<ui32>(value.size())};
+        const TKeyInfo keyInfo{partitionId, static_cast<ui32>(value.size()), patternIndex};
         writtenKeys.emplace_back(key, keyInfo);
         bytesWritten += value.size();
     }
@@ -658,6 +729,7 @@ bool TWorker::ExecuteWriteCommand(
 void TWorker::ExecuteWriteCommandAsync(
     const TString& actionName,
     const NKikimrKeyValue::ActionCommand_Write& writeCommand,
+    ui32 patternIndex,
     std::optional<ui32> actionStatsIndex,
     const TExecutionContextPtr& executionContext,
     TCommandDone done)
@@ -667,6 +739,19 @@ void TWorker::ExecuteWriteCommandAsync(
         return;
     }
 
+    if (patternIndex >= PatternsByIndex_.size()) {
+        Stats_.RecordError(
+            "invalid_pattern_index",
+            TStringBuilder()
+                << "write action=" << actionName
+                << " pattern_index=" << patternIndex
+                << " patterns_count=" << PatternsByIndex_.size(),
+            actionStatsIndex);
+        done();
+        return;
+    }
+    const TString& pattern = PatternsByIndex_[patternIndex];
+
     const ui32 partitionId = SelectPartitionId();
 
     TVector<std::pair<TString, TString>> pairs;
@@ -675,8 +760,7 @@ void TWorker::ExecuteWriteCommandAsync(
     for (ui32 i = 0; i < writeCommand.count(); ++i) {
         const ui64 keyId = WriteKeyCounter_.fetch_add(1, std::memory_order_relaxed) + 1;
         TString key = TStringBuilder() << actionName << "_" << WorkerId_ << "_" << keyId;
-        TString value = GetPatternData(writeCommand.size());
-        pairs.emplace_back(key, value);
+        pairs.emplace_back(std::move(key), pattern);
     }
 
     ui64 bytesWritten = 0;
@@ -684,7 +768,7 @@ void TWorker::ExecuteWriteCommandAsync(
     writtenKeys.reserve(pairs.size());
 
     for (const auto& [key, value] : pairs) {
-        const TKeyInfo keyInfo{partitionId, static_cast<ui32>(value.size())};
+        const TKeyInfo keyInfo{partitionId, static_cast<ui32>(value.size()), patternIndex};
         writtenKeys.emplace_back(key, keyInfo);
         bytesWritten += value.size();
     }
@@ -793,19 +877,30 @@ void TWorker::ContinueReadCommand(const std::shared_ptr<TReadCommandState>& stat
                     Stats_.RecordReadBytes(state->ActionStatsIndex, value.size());
 
                     if (state->VerifyData) {
-                        TString expected = GetPatternData(info.KeySize);
-                        expected = expected.substr(offset, state->ReadSize);
-                        if (value != expected) {
+                        if (info.PatternIndex >= PatternsByIndex_.size()) {
                             Stats_.RecordError(
                                 "verify_failed",
                                 TStringBuilder()
                                     << "key=" << key
                                     << " partition=" << info.PartitionId
-                                    << " offset=" << offset
-                                    << " requested_size=" << state->ReadSize
-                                    << " expected_len=" << expected.size()
-                                    << " actual_len=" << value.size(),
+                                    << " invalid_pattern_index=" << info.PatternIndex
+                                    << " patterns_count=" << PatternsByIndex_.size(),
                                 state->ActionStatsIndex);
+                        } else {
+                            const TString& expectedPattern = PatternsByIndex_[info.PatternIndex];
+                            TString expected = expectedPattern.substr(offset, state->ReadSize);
+                            if (value != expected) {
+                                Stats_.RecordError(
+                                    "verify_failed",
+                                    TStringBuilder()
+                                        << "key=" << key
+                                        << " partition=" << info.PartitionId
+                                        << " offset=" << offset
+                                        << " requested_size=" << state->ReadSize
+                                        << " expected_len=" << expected.size()
+                                        << " actual_len=" << value.size(),
+                                    state->ActionStatsIndex);
+                            }
                         }
                     }
                 }
@@ -895,15 +990,6 @@ ui32 TWorker::SelectPartitionId() {
     const ui32 partitionCount = std::max<ui32>(1, Config_.volume_config().partition_count());
     std::uniform_int_distribution<ui32> distribution(0, partitionCount - 1);
     return distribution(RandomEngine());
-}
-
-TString TWorker::GetPatternData(ui32 size) {
-    std::lock_guard lock(PatternCacheMutex_);
-    auto it = PatternCache_.find(size);
-    if (it == PatternCache_.end()) {
-        it = PatternCache_.emplace(size, GeneratePatternData(size)).first;
-    }
-    return it->second;
 }
 
 } // namespace NKvVolumeStress

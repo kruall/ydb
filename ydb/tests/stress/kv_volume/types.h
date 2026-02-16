@@ -23,6 +23,7 @@ struct TOptions {
 struct TKeyInfo {
     ui32 PartitionId = 0;
     ui32 KeySize = 0;
+    ui32 PatternIndex = 0;
 };
 
 } // namespace NKvVolumeStress
