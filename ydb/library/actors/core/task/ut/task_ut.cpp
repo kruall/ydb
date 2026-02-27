@@ -1,5 +1,5 @@
 #include <ydb/library/actors/core/task/task.h>
-#include <ydb/library/actors/core/task/mpmc_queue.h>
+#include <ydb/library/actors/core/task/task_system.h>
 #include <ydb/library/actors/core/task/when_all.h>
 
 #include <library/cpp/testing/unittest/registar.h>
@@ -97,6 +97,11 @@ namespace {
         co_return;
     }
 
+    task<void> SetValue42(int& out) {
+        out = 42;
+        co_return;
+    }
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(Task) {
@@ -129,6 +134,24 @@ Y_UNIT_TEST_SUITE(Task) {
         h.resume();
         UNIT_ASSERT(t.done());
         UNIT_ASSERT_VALUES_EQUAL(t.ExtractValue(), 43);
+    }
+
+    Y_UNIT_TEST(TaskSystemEnqueueDequeueAndRun) {
+        NActors::NTask::TTaskSystem sys;
+
+        int out = 0;
+        sys.Enqueue(SetValue42(out));
+
+        auto h = sys.TryDequeue();
+        UNIT_ASSERT(h);
+        UNIT_ASSERT_VALUES_EQUAL(out, 0);
+
+        h->resume();
+        UNIT_ASSERT_VALUES_EQUAL(out, 42);
+        UNIT_ASSERT(h->done());
+        h->destroy();
+
+        UNIT_ASSERT(!sys.TryDequeue());
     }
 
     Y_UNIT_TEST(ManualPromiseQueueDecouplesSetValueAndResume) {
