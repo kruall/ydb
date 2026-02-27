@@ -4,6 +4,7 @@ SRCS(
     mpmc_queue.h
     task_system.h
     task.h
+    task_executor_actor.h
     when_all.h
 )
 

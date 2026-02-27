@@ -1,8 +1,10 @@
 #include <ydb/library/actors/core/task/task.h>
 #include <ydb/library/actors/core/task/task_system.h>
+#include <ydb/library/actors/core/task/task_executor_actor.h>
 #include <ydb/library/actors/core/task/when_all.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <ydb/library/actors/testlib/test_runtime.h>
 
 #include <optional>
 
@@ -154,6 +156,24 @@ Y_UNIT_TEST_SUITE(Task) {
         UNIT_ASSERT(!sys.TryDequeue());
     }
 
+    Y_UNIT_TEST(TaskExecutorActorRunsQueuedTask) {
+        auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
+        runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
+        runtime->Initialize();
+
+        NActors::NTask::TTaskSystem sys;
+        const NActors::TActorId exec = runtime->Register(NActors::NTask::CreateTaskExecutorActor(sys));
+        const NActors::TActorId sender = runtime->AllocateEdgeActor();
+
+        int out = 0;
+        sys.Enqueue(SetValue42(out));
+
+        runtime->Send(new NActors::IEventHandle(exec, sender, new NActors::TEvents::TEvWakeup()));
+        runtime->DispatchEvents();
+
+        UNIT_ASSERT_VALUES_EQUAL(out, 42);
+    }
+
     Y_UNIT_TEST(ManualPromiseQueueDecouplesSetValueAndResume) {
         NActors::NTask::TTaskSystem q;
 
@@ -170,6 +190,33 @@ Y_UNIT_TEST_SUITE(Task) {
 
         q.Enqueue(h);
         UNIT_ASSERT(q.TryRunOne()); // resumes and completes; queue destroys coroutine frame
+        UNIT_ASSERT(out);
+        UNIT_ASSERT_VALUES_EQUAL(*out, 43);
+    }
+
+    Y_UNIT_TEST(TaskExecutorActorResumesContinuationFromManualPromise) {
+        auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
+        runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
+        runtime->Initialize();
+
+        NActors::NTask::TTaskSystem sys;
+        const NActors::TActorId exec = runtime->Register(NActors::NTask::CreateTaskExecutorActor(sys));
+        const NActors::TActorId sender = runtime->AllocateEdgeActor();
+
+        TManualPromise<int> p;
+        std::optional<int> out;
+        sys.Enqueue(AwaitManualPromiseAndStorePlusOne(p, out));
+
+        runtime->Send(new NActors::IEventHandle(exec, sender, new NActors::TEvents::TEvWakeup()));
+        runtime->DispatchEvents();
+        UNIT_ASSERT(!out); // suspended in co_await(p)
+
+        std::coroutine_handle<> h = p.SetValue(42);
+        UNIT_ASSERT(h);
+        sys.Enqueue(h);
+
+        runtime->Send(new NActors::IEventHandle(exec, sender, new NActors::TEvents::TEvWakeup()));
+        runtime->DispatchEvents();
         UNIT_ASSERT(out);
         UNIT_ASSERT_VALUES_EQUAL(*out, 43);
     }
