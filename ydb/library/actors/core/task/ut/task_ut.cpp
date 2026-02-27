@@ -1,6 +1,5 @@
 #include <ydb/library/actors/core/task/task.h>
 #include <ydb/library/actors/core/task/task_system.h>
-#include <ydb/library/actors/core/task/task_executor_actor.h>
 #include <ydb/library/actors/core/task/when_all.h>
 
 #include <library/cpp/testing/unittest/registar.h>
@@ -162,13 +161,11 @@ Y_UNIT_TEST_SUITE(Task) {
         runtime->Initialize();
 
         NActors::NTask::TTaskSystem sys;
-        const NActors::TActorId exec = runtime->Register(NActors::NTask::CreateTaskExecutorActor(sys));
-        const NActors::TActorId sender = runtime->AllocateEdgeActor();
+        sys.Initialize(runtime->GetAnyNodeActorSystem(), 1);
 
         int out = 0;
         sys.Enqueue(SetValue42(out));
 
-        runtime->Send(new NActors::IEventHandle(exec, sender, new NActors::TEvents::TEvWakeup()));
         runtime->DispatchEvents();
 
         UNIT_ASSERT_VALUES_EQUAL(out, 42);
@@ -200,14 +197,12 @@ Y_UNIT_TEST_SUITE(Task) {
         runtime->Initialize();
 
         NActors::NTask::TTaskSystem sys;
-        const NActors::TActorId exec = runtime->Register(NActors::NTask::CreateTaskExecutorActor(sys));
-        const NActors::TActorId sender = runtime->AllocateEdgeActor();
+        sys.Initialize(runtime->GetAnyNodeActorSystem(), 1);
 
         TManualPromise<int> p;
         std::optional<int> out;
         sys.Enqueue(AwaitManualPromiseAndStorePlusOne(p, out));
 
-        runtime->Send(new NActors::IEventHandle(exec, sender, new NActors::TEvents::TEvWakeup()));
         runtime->DispatchEvents();
         UNIT_ASSERT(!out); // suspended in co_await(p)
 
@@ -215,7 +210,6 @@ Y_UNIT_TEST_SUITE(Task) {
         UNIT_ASSERT(h);
         sys.Enqueue(h);
 
-        runtime->Send(new NActors::IEventHandle(exec, sender, new NActors::TEvents::TEvWakeup()));
         runtime->DispatchEvents();
         UNIT_ASSERT(out);
         UNIT_ASSERT_VALUES_EQUAL(*out, 43);
