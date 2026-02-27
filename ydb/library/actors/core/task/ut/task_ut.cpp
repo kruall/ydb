@@ -132,7 +132,7 @@ Y_UNIT_TEST_SUITE(Task) {
     }
 
     Y_UNIT_TEST(ManualPromiseQueueDecouplesSetValueAndResume) {
-        NActors::NTask::TMpmcCoroutineQueue q;
+        NActors::NTask::TTaskSystem q;
 
         TManualPromise<int> p;
         std::optional<int> out;
