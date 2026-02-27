@@ -131,6 +131,7 @@ END()
 RECURSE(
     harmonizer
     manual_test
+    task
 )
 
 RECURSE_FOR_TESTS(
