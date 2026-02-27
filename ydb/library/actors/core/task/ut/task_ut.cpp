@@ -137,22 +137,12 @@ Y_UNIT_TEST_SUITE(Task) {
         UNIT_ASSERT_VALUES_EQUAL(t.ExtractValue(), 43);
     }
 
-    Y_UNIT_TEST(TaskSystemEnqueueDequeueAndRun) {
+    Y_UNIT_TEST(TaskSystemRunsInlineWithoutExecutors) {
         NActors::NTask::TTaskSystem sys;
 
         int out = 0;
         sys.Enqueue(SetValue42(out));
-
-        auto h = sys.TryDequeue();
-        UNIT_ASSERT(h);
-        UNIT_ASSERT_VALUES_EQUAL(out, 0);
-
-        h->resume();
         UNIT_ASSERT_VALUES_EQUAL(out, 42);
-        UNIT_ASSERT(h->done());
-        h->destroy();
-
-        UNIT_ASSERT(!sys.TryDequeue());
     }
 
     Y_UNIT_TEST(TaskExecutorActorRunsQueuedTask) {
@@ -169,26 +159,6 @@ Y_UNIT_TEST_SUITE(Task) {
         runtime->DispatchEvents();
 
         UNIT_ASSERT_VALUES_EQUAL(out, 42);
-    }
-
-    Y_UNIT_TEST(ManualPromiseQueueDecouplesSetValueAndResume) {
-        NActors::NTask::TTaskSystem q;
-
-        TManualPromise<int> p;
-        std::optional<int> out;
-        q.Enqueue(AwaitManualPromiseAndStorePlusOne(p, out));
-
-        UNIT_ASSERT(q.TryRunOne()); // starts coroutine, suspends in co_await(p)
-        UNIT_ASSERT(!out);
-
-        std::coroutine_handle<> h = p.SetValue(42);
-        UNIT_ASSERT(h);
-        UNIT_ASSERT(!out);
-
-        q.Enqueue(h);
-        UNIT_ASSERT(q.TryRunOne()); // resumes and completes; queue destroys coroutine frame
-        UNIT_ASSERT(out);
-        UNIT_ASSERT_VALUES_EQUAL(*out, 43);
     }
 
     Y_UNIT_TEST(TaskExecutorActorResumesContinuationFromManualPromise) {

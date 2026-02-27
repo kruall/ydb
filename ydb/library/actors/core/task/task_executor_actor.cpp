@@ -8,35 +8,23 @@ namespace NActors::NTask {
 
     class TTaskExecutorActor final : public TActor<TTaskExecutorActor> {
     public:
-        explicit TTaskExecutorActor(TTaskSystem& system, ui32 executorId)
+        explicit TTaskExecutorActor(TTaskSystem& system)
             : TActor(&TTaskExecutorActor::StateWork)
             , System_(&system)
-            , ExecutorId_(executorId)
         {
         }
 
         STFUNC(StateWork) {
             switch (ev->GetTypeRewrite()) {
-                HFunc(TEvents::TEvWakeup, HandleWakeup);
+                HFunc(TTaskSystem::TEvRunTask, HandleRunTask);
                 HFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
             }
         }
 
     private:
-        void HandleWakeup(TEvents::TEvWakeup::TPtr&, const TActorContext& ctx) {
-            const TMonotonic deadline = ctx.Monotonic() + System_->GetTimeQuota();
-            while (ctx.Monotonic() < deadline) {
-                auto handle = System_->TakeTask(ExecutorId_);
-                if (!handle) {
-                    break;
-                }
-
-                System_->RunTask(*handle);
-            }
-
-            if (ctx.Monotonic() >= deadline) {
-                ctx.Send(SelfId(), new TEvents::TEvWakeup());
-            }
+        void HandleRunTask(TTaskSystem::TEvRunTask::TPtr& ev, const TActorContext&) {
+            auto handle = ev->Get()->Handle;
+            System_->RunTask(handle);
         }
 
         void HandlePoisonPill(TEvents::TEvPoisonPill::TPtr&, const TActorContext& ctx) {
@@ -45,11 +33,10 @@ namespace NActors::NTask {
 
     private:
         TTaskSystem* System_ = nullptr;
-        ui32 ExecutorId_ = 0;
     };
 
-    IActor* CreateTaskExecutorActor(TTaskSystem& system, ui32 executorId) {
-        return new TTaskExecutorActor(system, executorId);
+    IActor* CreateTaskExecutorActor(TTaskSystem& system, ui32) {
+        return new TTaskExecutorActor(system);
     }
 
 } // namespace NActors::NTask
