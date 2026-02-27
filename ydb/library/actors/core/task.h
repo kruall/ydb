@@ -199,6 +199,12 @@ namespace NActors::NTask {
             TAwaiter(const TAwaiter&) = delete;
             TAwaiter& operator=(const TAwaiter&) = delete;
 
+            ~TAwaiter() {
+                if (Handle) {
+                    Handle.destroy();
+                }
+            }
+
             bool await_ready() const noexcept {
                 return !Handle || Handle.done();
             }

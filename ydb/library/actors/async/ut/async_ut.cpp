@@ -1,4 +1,5 @@
 #include "common.h"
+#include <ydb/library/actors/async/execute.h>
 
 namespace NAsyncTest {
 
@@ -183,6 +184,10 @@ namespace NAsyncTest {
         }
     };
 
+    NTask::task<int> Return42Task() {
+        co_return 42;
+    }
+
     Y_UNIT_TEST_SUITE(Async) {
 
         Y_UNIT_TEST(AsyncBootstrap) {
@@ -193,6 +198,28 @@ namespace NAsyncTest {
             runtime.DispatchEvents();
 
             UNIT_ASSERT_VALUES_EQUAL(state.Destroyed, true);
+        }
+
+        Y_UNIT_TEST(ExecuteTaskViaTaskSystemInAsyncActor) {
+            TVector<TString> sequence;
+            TAsyncTestActor::TState state;
+            TAsyncTestActorRuntime runtime(/*taskExecutors*/ 1);
+
+            runtime.StartAsyncActor(state, [&](TAsyncTestActor* self) -> async<void> {
+                sequence.push_back("before");
+                int value = co_await Execute(Return42Task());
+                sequence.push_back("after");
+                UNIT_ASSERT_VALUES_EQUAL(value, 42);
+                self->PassAway();
+            });
+
+            ASYNC_ASSERT_SEQUENCE(sequence, "before");
+            UNIT_ASSERT(!state.Destroyed);
+
+            runtime.DispatchEvents();
+
+            ASYNC_ASSERT_SEQUENCE(sequence, "after");
+            UNIT_ASSERT(state.Destroyed);
         }
 
         Y_UNIT_TEST(AwaiterThrowWithoutSuspend) {

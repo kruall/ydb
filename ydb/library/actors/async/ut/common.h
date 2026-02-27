@@ -188,13 +188,22 @@ namespace NAsyncTest {
 
     class TAsyncTestActorRuntime : public TTestActorRuntimeBase {
     public:
-        TAsyncTestActorRuntime() {
+        explicit TAsyncTestActorRuntime(ui32 taskExecutors = 0, ui32 taskPoolId = 0)
+            : TaskExecutors(taskExecutors)
+            , TaskPoolId(taskPoolId)
+        {
             Initialize();
 
             SetScheduledEventFilter([](auto&, auto&, auto, auto&) {
                 // Don't drop scheduled events
                 return false;
             });
+        }
+
+        void InitActorSystemSetup(TActorSystemSetup& setup, TNodeDataBase* node) override {
+            TTestActorRuntimeBase::InitActorSystemSetup(setup, node);
+            setup.CpuManager.TaskSystem.Executors = TaskExecutors;
+            setup.CpuManager.TaskSystem.PoolId = TaskPoolId;
         }
 
         void CleanupNode(ui32 nodeIndex = 0) {
@@ -255,6 +264,10 @@ namespace NAsyncTest {
             actor.Step();
             return actor;
         }
+
+    private:
+        const ui32 TaskExecutors;
+        const ui32 TaskPoolId;
     };
 
 } // namespace NAsyncTest
