@@ -45,7 +45,7 @@ namespace NActors::NTask {
         TTaskSystem(const TTaskSystem&) = delete;
         TTaskSystem& operator=(const TTaskSystem&) = delete;
 
-        void Initialize(TActorSystem* actorSystem, ui32 executorCount) {
+        void Initialize(TActorSystem* actorSystem, ui32 executorCount, ui32 poolId = 0) {
             Y_ASSERT(actorSystem);
             Y_ASSERT(executorCount > 0);
             Y_ASSERT(!IsInitialized());
@@ -55,7 +55,7 @@ namespace NActors::NTask {
             Executors_.reserve(executorCount);
 
             for (ui32 executorId = 0; executorId < executorCount; ++executorId) {
-                Executors_.emplace_back(actorSystem->Register(CreateTaskExecutorActor(*this, executorId)));
+                Executors_.emplace_back(actorSystem->Register(CreateTaskExecutorActor(*this, executorId), TMailboxType::HTSwap, poolId));
             }
         }
 

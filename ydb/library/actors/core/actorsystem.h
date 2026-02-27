@@ -21,6 +21,10 @@ namespace NInterconnect::NRdma {
 }
 
 namespace NActors {
+    namespace NTask {
+        class TTaskSystem;
+    }
+
     class IActor;
     class TActorSystem;
     class TCpuManager;
@@ -334,6 +338,10 @@ namespace NActors {
 
         TVector<IExecutorPool*> GetBasicExecutorPools() const {
             return CpuManager->GetBasicExecutorPools();
+        }
+
+        NTask::TTaskSystem* GetTaskSystem() const {
+            return CpuManager->GetTaskSystem();
         }
 
         void GetExecutorPoolState(i16 poolId, TExecutorPoolState &state) const;
