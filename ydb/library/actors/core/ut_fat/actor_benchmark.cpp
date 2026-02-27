@@ -1,4 +1,5 @@
 #include "actor_benchmark_helper.h"
+#include <ydb/library/actors/core/task/task_benchmark_helper.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -17,6 +18,10 @@ struct THeavyActorBenchmarkSettings : TActorBenchmarkSettings {
     static constexpr auto MailboxTypes = {
         TMailboxType::HTSwap,
     };
+};
+
+struct THeavyTaskBenchmarkSettings : TTaskBenchmarkSettings {
+    static constexpr ui32 DefaultPingPongDurationSeconds = 1;
 };
 
 
@@ -93,6 +98,43 @@ Y_UNIT_TEST_SUITE(HeavyActorBenchmark) {
         }
         std::vector<ui32> actorPairsList = {512};
         TActorBenchmark::RunSendActivateReceiveCSV(threadsList, actorPairsList, {1}, TDuration::Seconds(1));
+    }
+
+    Y_UNIT_TEST(TaskPingPongCSVManual) {
+        if (const char* testMode = getenv("ACTORSYSTEM_TEST_MODE"); !testMode || TString(testMode) != "manual") {
+            return;
+        }
+
+        using TTaskBenchmark = ::NActors::NTests::TTaskBenchmark<THeavyTaskBenchmarkSettings>;
+
+        auto parseUintList = [](const char* envVar) -> std::vector<ui32> {
+            std::vector<ui32> result;
+            if (const char* envValue = getenv(envVar)) {
+                TVector<TString> parts;
+                Split(TString(envValue), ",", parts);
+                for (const auto& part : parts) {
+                    result.push_back(FromString<ui32>(part));
+                }
+            }
+            return result;
+        };
+
+        std::vector<ui32> threadsList = parseUintList("ACTORSYSTEM_THREADS");
+        if (threadsList.empty()) {
+            threadsList = {1, 2, 4, 8};
+        }
+
+        std::vector<ui32> actorPairsList = parseUintList("ACTORSYSTEM_ACTOR_PAIRS");
+        if (actorPairsList.empty()) {
+            actorPairsList = {1, 2, 4, 8};
+        }
+
+        TDuration duration = TDuration::Seconds(THeavyTaskBenchmarkSettings::DefaultPingPongDurationSeconds);
+        if (const char* durationStr = getenv("ACTORSYSTEM_TASK_DURATION")) {
+            duration = TDuration::Seconds(FromString<ui64>(durationStr));
+        }
+
+        TTaskBenchmark::RunPingPongCSV(threadsList, actorPairsList, duration);
     }
 
 }

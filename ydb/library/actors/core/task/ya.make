@@ -2,6 +2,7 @@ LIBRARY()
 
 SRCS(
     task_executor_actor.cpp
+    task_benchmark_helper.h
     task_system.h
     task.h
     when_all.h
