@@ -1,5 +1,5 @@
 #include "actor_benchmark_helper.h"
-#include <ydb/library/actors/core/task/task_benchmark_helper.h>
+#include <ydb/library/actors/core/task_benchmark_helper.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 

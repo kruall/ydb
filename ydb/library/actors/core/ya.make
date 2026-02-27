@@ -95,6 +95,10 @@ SRCS(
     scheduler_cookie.h
     scheduler_queue.h
     servicemap.h
+    task.h
+    task_benchmark_helper.h
+    task_executor_actor.cpp
+    task_system.h
 )
 
 GENERATE_ENUM_SERIALIZATION(defs.h)
@@ -131,7 +135,6 @@ END()
 RECURSE(
     harmonizer
     manual_test
-    task
 )
 
 RECURSE_FOR_TESTS(

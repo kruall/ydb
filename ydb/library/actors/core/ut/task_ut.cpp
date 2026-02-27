@@ -1,6 +1,5 @@
-#include <ydb/library/actors/core/task/task.h>
-#include <ydb/library/actors/core/task/task_system.h>
-#include <ydb/library/actors/core/task/when_all.h>
+#include <ydb/library/actors/core/task.h>
+#include <ydb/library/actors/core/task_system.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 #include <ydb/library/actors/testlib/test_runtime.h>

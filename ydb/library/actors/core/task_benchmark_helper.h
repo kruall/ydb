@@ -3,8 +3,8 @@
 #include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/core/executor_pool_basic.h>
 #include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/core/task/task.h>
-#include <ydb/library/actors/core/task/task_system.h>
+#include <ydb/library/actors/core/task.h>
+#include <ydb/library/actors/core/task_system.h>
 #include <ydb/library/actors/util/threadparkpad.h>
 
 #include <util/generic/vector.h>

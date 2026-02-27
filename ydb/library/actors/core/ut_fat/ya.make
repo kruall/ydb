@@ -18,7 +18,6 @@ ENDIF()
 
 PEERDIR(
     ydb/library/actors/core
-    ydb/library/actors/core/task
 )
 
 SRCS(
