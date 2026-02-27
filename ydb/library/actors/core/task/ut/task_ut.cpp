@@ -1,4 +1,5 @@
 #include <ydb/library/actors/core/task/task.h>
+#include <ydb/library/actors/core/task/mpmc_queue.h>
 #include <ydb/library/actors/core/task/when_all.h>
 
 #include <library/cpp/testing/unittest/registar.h>
@@ -76,6 +77,11 @@ namespace {
         co_return;
     }
 
+    task<void> AwaitManualPromiseAndStorePlusOne(TManualPromise<int>& p, std::optional<int>& out) {
+        out = (co_await p) + 1;
+        co_return;
+    }
+
     task<void> AwaitTwoAndStore(TManualPromise<int>& p1, TManualPromise<int>& p2, int& out1, int& out2) {
         co_await NActors::NTask::WhenAll(
             AwaitManualPromiseAndStore(p1, out1),
@@ -123,6 +129,26 @@ Y_UNIT_TEST_SUITE(Task) {
         h.resume();
         UNIT_ASSERT(t.done());
         UNIT_ASSERT_VALUES_EQUAL(t.ExtractValue(), 43);
+    }
+
+    Y_UNIT_TEST(ManualPromiseQueueDecouplesSetValueAndResume) {
+        NActors::NTask::TMpmcCoroutineQueue q;
+
+        TManualPromise<int> p;
+        std::optional<int> out;
+        q.Enqueue(AwaitManualPromiseAndStorePlusOne(p, out));
+
+        UNIT_ASSERT(q.TryRunOne()); // starts coroutine, suspends in co_await(p)
+        UNIT_ASSERT(!out);
+
+        std::coroutine_handle<> h = p.SetValue(42);
+        UNIT_ASSERT(h);
+        UNIT_ASSERT(!out);
+
+        q.Enqueue(h);
+        UNIT_ASSERT(q.TryRunOne()); // resumes and completes; queue destroys coroutine frame
+        UNIT_ASSERT(out);
+        UNIT_ASSERT_VALUES_EQUAL(*out, 43);
     }
 
     Y_UNIT_TEST(WhenAllTwoManualPromises) {

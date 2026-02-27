@@ -1,6 +1,7 @@
 LIBRARY()
 
 SRCS(
+    mpmc_queue.h
     task.h
     when_all.h
 )
