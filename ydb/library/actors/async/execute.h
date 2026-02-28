@@ -2,8 +2,8 @@
 
 #include "async.h"
 
-#include <ydb/library/actors/core/task.h>
-#include <ydb/library/actors/core/task_system.h>
+#include <ydb/library/actors/task/task.h>
+#include <ydb/library/actors/task/task_system.h>
 
 #include <util/system/yassert.h>
 

@@ -9,6 +9,7 @@ RECURSE(
     log_backend
     memory_log
     prof
+    task
     testlib
     util
     wilson

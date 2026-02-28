@@ -32,6 +32,7 @@ SRCS(
 
 PEERDIR(
     ydb/library/actors/core
+    ydb/library/actors/task
 )
 
 END()

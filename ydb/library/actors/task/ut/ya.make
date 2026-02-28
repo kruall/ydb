@@ -1,7 +1,6 @@
-UNITTEST_FOR(ydb/library/actors/core)
+UNITTEST_FOR(ydb/library/actors/task)
 
 FORK_SUBTESTS()
-
 IF (SANITIZER_TYPE)
     SIZE(LARGE)
     INCLUDE(${ARCADIA_ROOT}/ydb/tests/large.inc)
@@ -10,20 +9,15 @@ IF (SANITIZER_TYPE)
         ram:32
     )
 ELSE()
-    SIZE(LARGE)
-    TAG(ya:fat)
-    SPLIT_FACTOR(20)
+    SIZE(MEDIUM)
 ENDIF()
 
-
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/task
+    ydb/library/actors/testlib
 )
 
 SRCS(
-    actor_benchmark.cpp
-    waiting_benchs.cpp
+    task_ut.cpp
 )
 
 END()

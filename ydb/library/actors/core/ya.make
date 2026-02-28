@@ -97,10 +97,6 @@ SRCS(
     subsystem.cpp
     subsystem.h
     servicemap.h
-    task.h
-    task_benchmark_helper.h
-    task_executor_actor.cpp
-    task_system.h
 )
 
 GENERATE_ENUM_SERIALIZATION(defs.h)

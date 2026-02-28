@@ -1,6 +1,7 @@
 UNITTEST_FOR(ydb/library/actors/async)
 
 PEERDIR(
+    ydb/library/actors/task
     ydb/library/actors/testlib
 )
 
