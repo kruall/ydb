@@ -200,10 +200,14 @@ namespace NAsyncTest {
             UNIT_ASSERT_VALUES_EQUAL(state.Destroyed, true);
         }
 
-        Y_UNIT_TEST(ExecuteTaskViaTaskSystemInAsyncActor) {
+        Y_UNIT_TEST(ExecuteTaskInAsyncActor) {
             TVector<TString> sequence;
             TAsyncTestActor::TState state;
-            TAsyncTestActorRuntime runtime(/*taskExecutors*/ 1);
+            TAsyncTestActorRuntime runtime([](TActorSystem& actorSystem) {
+                auto taskSystem = std::make_unique<NTask::TTaskSystem>();
+                taskSystem->Initialize(&actorSystem, 1);
+                actorSystem.RegisterSubSystem(std::move(taskSystem));
+            });
 
             runtime.StartAsyncActor(state, [&](TAsyncTestActor* self) -> async<void> {
                 sequence.push_back("before");

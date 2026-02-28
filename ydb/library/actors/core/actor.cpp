@@ -2,7 +2,6 @@
 #include "debug.h"
 #include "actorsystem.h"
 #include "executor_thread.h"
-#include "task_system.h"
 #include <ydb/library/actors/util/datetime.h>
 
 #define POOL_ID() \
@@ -99,21 +98,6 @@ namespace NActors {
 
     bool TActivationContext::Send(const TActorId& recipient, std::unique_ptr<IEventBase> ev, ui32 flags, ui64 cookie) {
         return ActorSystem()->Send(recipient, ev.release(), flags, cookie);
-    }
-
-    void TActivationContext::Execute(NTask::task<void>&& task) {
-        TActorSystem* actorSystem = ActorSystem();
-        if (NTask::TTaskSystem* taskSystem = actorSystem->GetTaskSystem()) {
-            taskSystem->Enqueue(std::move(task));
-            return;
-        }
-
-        auto handle = std::coroutine_handle<>(task.ReleaseHandle());
-        Y_ABORT_UNLESS(handle);
-        handle.resume();
-        if (handle.done()) {
-            handle.destroy();
-        }
     }
 
     void TActorIdentity::Schedule(TInstant deadline, IEventBase* ev, ISchedulerCookie* cookie) const {

@@ -70,18 +70,12 @@ namespace NActors {
         TCpuMask JailAffinity;
     };
 
-    struct TTaskSystemConfig {
-        ui32 Executors = 0;
-        ui32 PoolId = 0;
-    };
-
     struct TCpuManagerConfig {
         TVector<TBasicExecutorPoolConfig> Basic;
         TVector<TIOExecutorPoolConfig> IO;
         TVector<TSelfPingInfo> PingInfoByPool;
         TSharedExecutorPoolConfig Shared;
         std::optional<TExecutorPoolJailConfig> Jail;
-        TTaskSystemConfig TaskSystem;
 
         ui32 GetExecutorsCount() const {
             return Basic.size() + IO.size();

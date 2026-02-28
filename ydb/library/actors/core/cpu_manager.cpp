@@ -7,7 +7,6 @@
 #include "executor_pool_basic.h"
 #include "executor_pool_io.h"
 #include "executor_pool_shared.h"
-#include "task_system.h"
 
 namespace NActors {
     LWTRACE_USING(ACTORLIB_PROVIDER);
@@ -132,20 +131,6 @@ namespace NActors {
             }
         }
         ACTORLIB_DEBUG(EDebugLevel::ActorSystem, "TCpuManager::PrepareStart: prepared");
-    }
-
-    void TCpuManager::InitializeTaskSystem(TActorSystem* actorSystem) {
-        Y_ABORT_UNLESS(actorSystem);
-        const ui32 executors = Config.TaskSystem.Executors;
-        if (!executors) {
-            return;
-        }
-        if (TaskSystem) {
-            return;
-        }
-
-        TaskSystem = std::make_unique<NTask::TTaskSystem>();
-        TaskSystem->Initialize(actorSystem, executors, Config.TaskSystem.PoolId);
     }
 
     void TCpuManager::Start() {

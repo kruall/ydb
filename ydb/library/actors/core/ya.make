@@ -94,6 +94,8 @@ SRCS(
     scheduler_cookie.cpp
     scheduler_cookie.h
     scheduler_queue.h
+    subsystem.cpp
+    subsystem.h
     servicemap.h
     task.h
     task_benchmark_helper.h

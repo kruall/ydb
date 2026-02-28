@@ -2,6 +2,7 @@
 
 #include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/core/subsystem.h>
 
 #include <util/generic/vector.h>
 #include <util/random/random.h>
@@ -22,7 +23,7 @@ namespace NActors::NTask {
 
     IActor* CreateTaskExecutorActor(TTaskSystem& system, ui32 executorId);
 
-    class TTaskSystem final {
+    class TTaskSystem final : public ISubSystem {
     public:
         static constexpr ui32 DefaultExecutors = 1;
         enum EEv {

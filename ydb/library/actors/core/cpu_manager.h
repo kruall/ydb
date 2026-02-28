@@ -4,13 +4,10 @@
 #include "executor_pool.h"
 #include "mon_stats.h"
 #include <ydb/library/actors/core/harmonizer/harmonizer.h>
+
 #include <memory>
 
 namespace NActors {
-    namespace NTask {
-        class TTaskSystem;
-    }
-
     struct TActorSystemSetup;
     class TExecutorPoolJail;
     class TSharedExecutorPool;
@@ -21,7 +18,6 @@ namespace NActors {
         std::unique_ptr<IHarmonizer> Harmonizer;
         std::unique_ptr<TSharedExecutorPool> Shared;
         std::unique_ptr<TExecutorPoolJail> Jail;
-        std::unique_ptr<NTask::TTaskSystem> TaskSystem;
         TCpuManagerConfig Config;
 
     public:
@@ -35,12 +31,8 @@ namespace NActors {
         void PrepareStop();
         void Shutdown();
         void Cleanup();
-        void InitializeTaskSystem(TActorSystem* actorSystem);
 
         TVector<IExecutorPool*> GetBasicExecutorPools() const;
-        NTask::TTaskSystem* GetTaskSystem() const {
-            return TaskSystem.get();
-        }
 
         ui32 GetExecutorsCount() const {
             return ExecutorPoolCount;

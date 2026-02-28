@@ -730,6 +730,9 @@ namespace NActors {
         virtual void InitActorSystemSetup(TActorSystemSetup& setup, TNodeDataBase* node) {
             Y_UNUSED(setup, node);
         }
+        virtual void InitActorSystem(TActorSystem& actorSystem, TNodeDataBase* node) {
+            Y_UNUSED(actorSystem, node);
+        }
 
    private:
         IActor* FindActor(const TActorId& actorId, TNodeDataBase* node) const;

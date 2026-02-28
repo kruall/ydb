@@ -130,7 +130,7 @@ namespace NActors {
     template<class T>
     async<T> Execute(NTask::task<T>&& task) {
         TActorSystem* actorSystem = TActivationContext::ActorSystem();
-        NTask::TTaskSystem* taskSystem = actorSystem ? actorSystem->GetTaskSystem() : nullptr;
+        NTask::TTaskSystem* taskSystem = actorSystem ? actorSystem->GetSubSystem<NTask::TTaskSystem>() : nullptr;
         if constexpr (std::is_void_v<T>) {
             co_await NDetail::TExecuteTaskAwaiter<T>(std::move(task), taskSystem);
             co_return;

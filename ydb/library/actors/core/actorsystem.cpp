@@ -447,8 +447,6 @@ namespace NActors {
             }
         }
 
-        CpuManager->InitializeTaskSystem(this);
-
         Scheduler->PrepareStart();
         CpuManager->Start();
         Send(MakeSchedulerActorId(), new TEvSchedulerInitialize(scheduleReaders, &CurrentTimestamp, &CurrentMonotonic));

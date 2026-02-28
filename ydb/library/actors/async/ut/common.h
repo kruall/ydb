@@ -188,9 +188,8 @@ namespace NAsyncTest {
 
     class TAsyncTestActorRuntime : public TTestActorRuntimeBase {
     public:
-        explicit TAsyncTestActorRuntime(ui32 taskExecutors = 0, ui32 taskPoolId = 0)
-            : TaskExecutors(taskExecutors)
-            , TaskPoolId(taskPoolId)
+        explicit TAsyncTestActorRuntime(std::function<void(TActorSystem&)> initActorSystem = {})
+            : InitActorSystem_(std::move(initActorSystem))
         {
             Initialize();
 
@@ -200,10 +199,10 @@ namespace NAsyncTest {
             });
         }
 
-        void InitActorSystemSetup(TActorSystemSetup& setup, TNodeDataBase* node) override {
-            TTestActorRuntimeBase::InitActorSystemSetup(setup, node);
-            setup.CpuManager.TaskSystem.Executors = TaskExecutors;
-            setup.CpuManager.TaskSystem.PoolId = TaskPoolId;
+        void InitActorSystem(TActorSystem& actorSystem, TNodeDataBase*) override {
+            if (InitActorSystem_) {
+                InitActorSystem_(actorSystem);
+            }
         }
 
         void CleanupNode(ui32 nodeIndex = 0) {
@@ -266,8 +265,7 @@ namespace NAsyncTest {
         }
 
     private:
-        const ui32 TaskExecutors;
-        const ui32 TaskPoolId;
+        std::function<void(TActorSystem&)> InitActorSystem_;
     };
 
 } // namespace NAsyncTest

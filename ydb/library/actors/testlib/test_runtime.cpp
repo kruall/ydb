@@ -1852,6 +1852,7 @@ namespace NActors {
         }
 
         auto actorSystem = THolder<TActorSystem>(new TActorSystem(setup, node->GetAppData(), node->LogSettings));
+        InitActorSystem(*actorSystem, node);
 
         if (node->ExecutorPools.empty()) {
             // Initialize pools from actor system (except IO pool)

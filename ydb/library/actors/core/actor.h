@@ -15,11 +15,6 @@
 #include <library/cpp/containers/absl_flat_hash/flat_hash_map.h>
 
 namespace NActors {
-    namespace NTask {
-        template<class T>
-        class task;
-    }
-
     class TActorSystem;
     class TMailboxTable;
     class TMailbox;
@@ -77,8 +72,6 @@ namespace NActors {
 
         template <ESendingType SendingType = ESendingType::Common>
         static bool Forward(THolder<IEventHandle>& ev, const TActorId& recipient);
-
-        static void Execute(NTask::task<void>&& task);
 
         /**
          * Schedule one-shot event that will be send at given time point in the future.
