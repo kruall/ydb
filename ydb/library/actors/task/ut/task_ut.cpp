@@ -1,14 +1,17 @@
 #include <ydb/library/actors/task/task.h>
+#include <ydb/library/actors/task/service_map_subsystem.h>
 #include <ydb/library/actors/task/task_system.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 #include <ydb/library/actors/testlib/test_runtime.h>
 
 #include <optional>
+#include <util/generic/string.h>
 
 namespace {
 
     using NActors::NTask::task;
+    using TActorIntMapSubSystem = NActors::NTask::TServiceMapSubSystem<NActors::TActorId, int, NActors::TActorId::THash>;
 
     template<class T>
     class TManualPromise {
@@ -182,6 +185,42 @@ Y_UNIT_TEST_SUITE(Task) {
         runtime->DispatchEvents();
         UNIT_ASSERT(out);
         UNIT_ASSERT_VALUES_EQUAL(*out, 43);
+    }
+
+    Y_UNIT_TEST(ServiceMapSubSystemStoresByTemplateKeyValue) {
+        NActors::NTask::TServiceMapSubSystem<int, TString> subSystem;
+
+        UNIT_ASSERT_VALUES_EQUAL(subSystem.Find(100), TString());
+        UNIT_ASSERT_VALUES_EQUAL(subSystem.Update(100, TString("v1")), TString());
+        UNIT_ASSERT_VALUES_EQUAL(subSystem.Find(100), TString("v1"));
+        UNIT_ASSERT_VALUES_EQUAL(subSystem.Update(100, TString("v2")), TString("v1"));
+        UNIT_ASSERT(subSystem.Erase(100));
+        UNIT_ASSERT_VALUES_EQUAL(subSystem.Find(100), TString());
+    }
+
+    Y_UNIT_TEST(ServiceMapSubSystemWorksAsActorSubSystem) {
+        class TRuntimeWithServiceMapSubSystem final : public NActors::TTestActorRuntimeBase {
+        protected:
+            void InitActorSystem(NActors::TActorSystem& actorSystem, TNodeDataBase*) override {
+                actorSystem.RegisterSubSystem(std::make_unique<TActorIntMapSubSystem>());
+            }
+        };
+
+        auto runtime = MakeHolder<TRuntimeWithServiceMapSubSystem>();
+        runtime->Initialize();
+
+        auto* actorSystem = runtime->GetAnyNodeActorSystem();
+        UNIT_ASSERT(actorSystem);
+
+        auto* subSystem = actorSystem->GetSubSystem<TActorIntMapSubSystem>();
+        UNIT_ASSERT(subSystem);
+
+        const NActors::TActorId actorId(1, "shstate01");
+        UNIT_ASSERT_VALUES_EQUAL(subSystem->Find(actorId), 0);
+        UNIT_ASSERT_VALUES_EQUAL(subSystem->Update(actorId, 42), 0);
+        UNIT_ASSERT_VALUES_EQUAL(subSystem->Find(actorId), 42);
+        UNIT_ASSERT(subSystem->Erase(actorId));
+        UNIT_ASSERT_VALUES_EQUAL(subSystem->Find(actorId), 0);
     }
 
     Y_UNIT_TEST(WhenAllTwoManualPromises) {
