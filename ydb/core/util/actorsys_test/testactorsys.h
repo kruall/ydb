@@ -33,6 +33,10 @@ TString GetRegisteredActorName(const TActorId& actorId);
 class TTestExecutorPool;
 
 class TTestActorSystem {
+public:
+    using TActorSystemSetupCallback = std::function<void(ui32, NActors::TActorSystemSetup&)>;
+
+private:
     class TTestSchedulerThread : public ISchedulerThread {
         TTestActorSystem *Context;
         volatile ui64 *CurrentTimestampPtr = nullptr;
@@ -133,6 +137,7 @@ class TTestActorSystem {
     TSingleThreadInterconnectMock InterconnectMock;
     std::unordered_map<ui32, TPerNodeInfo> PerNodeInfo;
     std::set<TActorId> LoggerActorIds;
+    TVector<TActorSystemSetupCallback> ActorSystemSetupCallbacks;
 
     static thread_local TTestActorSystem *CurrentTestActorSystem;
 
@@ -308,10 +313,18 @@ public:
             }
         }
 
+        for (const auto& callback : ActorSystemSetupCallbacks) {
+            callback(nodeId, *setup);
+        }
+
         info.AppData = std::move(MakeAppData());
         info.ActorSystem = std::make_unique<TActorSystem>(setup, info.AppData.get(), LoggerSettings_);
         info.MailboxTable = std::make_unique<TMailboxTable>();
         info.ExecutorThread = std::make_unique<TExecutorThread>(0, info.ActorSystem.get(), pool, "TestExecutor");
+    }
+
+    void AddActorSystemSetupCallback(TActorSystemSetupCallback callback) {
+        ActorSystemSetupCallbacks.emplace_back(std::move(callback));
     }
 
     void StartNode(ui32 nodeId) {

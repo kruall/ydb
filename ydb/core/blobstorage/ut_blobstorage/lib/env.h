@@ -42,6 +42,7 @@ struct TEnvironmentSetup {
         const TBlobStorageGroupType Erasure = TBlobStorageGroupType::ErasureNone;
         const TNodeWardenMockActor::TSetup::TPtr NodeWardenMockSetup = nullptr;
         const bool Encryption = false;
+        const std::function<void(ui32, NActors::TActorSystemSetup&)> PrepareActorSystemSetup = nullptr;
         const std::function<void(ui32, TNodeWardenConfig&)> ConfigPreprocessor = nullptr;
         const std::function<void(TTestActorSystem&)> PrepareRuntime = nullptr;
         const ui32 ControllerNodeId = 1;
@@ -293,6 +294,9 @@ struct TEnvironmentSetup {
     void Initialize() {
         Runtime = MakeRuntime();
         TAppData::TimeProvider = TTestActorSystem::CreateTimeProvider();
+        if (Settings.PrepareActorSystemSetup) {
+            Runtime->AddActorSystemSetupCallback(Settings.PrepareActorSystemSetup);
+        }
         if (Settings.PrepareRuntime) {
             Settings.PrepareRuntime(*Runtime);
         }

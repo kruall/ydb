@@ -61,6 +61,7 @@ PEERDIR(
     ydb/core/blobstorage/ut_blobstorage/lib
     ydb/core/blobstorage/vdisk/common
     ydb/core/blobstorage/vdisk/scrub
+    ydb/core/util/actorsys_test
 )
 
 END()
@@ -88,4 +89,5 @@ RECURSE_FOR_TESTS(
     ut_stop_pdisk
     ut_cluster_balancing
     ut_move_pdisk
+    ut_task
 )
