@@ -83,8 +83,22 @@ namespace NKikimr {
         EstablishingSessionsTimeoutEv = nullptr;
         ConfigureQueryTimeoutEv = nullptr;
         ClearTimeoutCounters();
+        RegisterSharedState();
         Become(&TThis::StateWork);
         ProcessInitQueue();
+    }
+
+    void TBlobStorageGroupProxy::RegisterSharedState() {
+        SharedState->ConnectionEpoch.fetch_add(1, std::memory_order_relaxed);
+        if (auto* subSystem = TActivationContext::ActorSystem()->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>()) {
+            subSystem->Update(GroupId.GetRawId(), SharedState);
+        }
+    }
+
+    void TBlobStorageGroupProxy::UnregisterSharedState() {
+        if (auto* subSystem = TActivationContext::ActorSystem()->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>()) {
+            subSystem->Erase(GroupId.GetRawId());
+        }
     }
 
     void TBlobStorageGroupProxy::Handle(TEvBlobStorage::TEvConfigureProxy::TPtr ev) {
@@ -300,6 +314,7 @@ namespace NKikimr {
     }
 
     void TBlobStorageGroupProxy::PassAway() {
+        UnregisterSharedState();
         for (const auto& [actorId, _] : ActiveRequests) {
             TActivationContext::Send(new IEventHandle(TEvents::TSystem::Poison, 0, actorId, {}, nullptr, 0));
         }

@@ -103,6 +103,7 @@
 #include <ydb/core/blobstorage/other/mon_get_blob_page.h>
 #include <ydb/core/blobstorage/other/mon_blob_range_page.h>
 #include <ydb/core/blobstorage/other/mon_vdisk_stream.h>
+#include <ydb/core/blobstorage/dsproxy/dsproxy.h>
 
 #include <ydb/public/lib/deprecated/client/msgbus_client.h>
 #include <ydb/core/client/minikql_compile/mkql_compile_service.h>
@@ -1731,6 +1732,7 @@ void TKikimrRunner::InitializeActorSystem(
     THolder<TActorSystemSetup> setup(new TActorSystemSetup());
 
     serviceInitializers->InitializeServices(setup.Get(), AppData.Get());
+    NActorSystemConfigHelpers::AddTaskSystemForUserPool(*setup, AppData->UserPoolId);
 
     if (Monitoring) {
         setup->LocalServices.emplace_back(MakeWebLoginServiceId(), TActorSetupCmd(CreateWebLoginService(),
@@ -1746,6 +1748,10 @@ void TKikimrRunner::InitializeActorSystem(
     }
 
     ApplyLogSettings(runConfig);
+
+    setup->AfterCreateCallbacks.emplace_back([](TActorSystem& actorSystem) {
+        actorSystem.RegisterSubSystem(std::make_unique<TBlobStorageGroupSharedStateSubSystem>());
+    });
 
     ActorSystem.Reset(new TActorSystem(setup, AppData.Get(), LogSettings));
 

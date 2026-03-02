@@ -106,6 +106,8 @@ namespace NActors {
     };
 
     struct TActorSystemSetup {
+        using TAfterCreateCallback = std::function<void(TActorSystem&)>;
+
         ui32 NodeId = 0;
 
         // Either Executors or CpuManager must be initialized
@@ -122,6 +124,7 @@ namespace NActors {
 
         using TLocalServices = TVector<std::pair<TActorId, TActorSetupCmd>>;
         TLocalServices LocalServices;
+        TVector<TAfterCreateCallback> AfterCreateCallbacks;
 
         std::shared_ptr<IRcBufAllocator> RcBufAllocator;
 

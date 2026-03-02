@@ -5,6 +5,9 @@
 
 #include <ydb/library/actors/core/config.h>
 
+namespace NActors {
+    struct TActorSystemSetup;
+}
 
 namespace NKikimr {
 
@@ -13,6 +16,8 @@ namespace NActorSystemConfigHelpers {
 void AddExecutorPool(NActors::TCpuManagerConfig& cpuManager, const NKikimrConfig::TActorSystemConfig::TExecutor& poolConfig, const NKikimrConfig::TActorSystemConfig& systemConfig, ui32 poolId, NMonitoring::TDynamicCounterPtr counters);
 
 NActors::TSchedulerConfig CreateSchedulerConfig(const NKikimrConfig::TActorSystemConfig::TScheduler& config);
+
+void AddTaskSystemForUserPool(NActors::TActorSystemSetup& setup, ui32 userPoolId);
 
 }  // namespace NActorSystemConfigHelpers
 

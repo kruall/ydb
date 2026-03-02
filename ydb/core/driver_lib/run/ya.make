@@ -45,6 +45,7 @@ PEERDIR(
     ydb/core/blob_depot
     ydb/core/blobstorage
     ydb/core/blobstorage/backpressure
+    ydb/core/blobstorage/dsproxy
     ydb/core/blobstorage/nodewarden
     ydb/core/blobstorage/other
     ydb/core/blobstorage/pdisk
@@ -141,6 +142,7 @@ PEERDIR(
     ydb/library/actors/prof
     ydb/library/actors/protos
     ydb/library/actors/retro_tracing
+    ydb/library/actors/task
     ydb/library/actors/util
     ydb/library/folder_service
     ydb/library/folder_service/proto

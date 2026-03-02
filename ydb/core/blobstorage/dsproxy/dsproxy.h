@@ -20,9 +20,12 @@
 #include <ydb/library/actors/wilson/wilson_span.h>
 #include <ydb/core/base/appdata_fwd.h>
 #include <ydb/core/base/group_stat.h>
+#include <ydb/library/actors/task/service_map_subsystem.h>
 #include <ydb/library/wilson_ids/wilson.h>
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 #include <util/generic/hash_set.h>
+
+#include <atomic>
 
 namespace NKikimr {
 
@@ -175,6 +178,14 @@ struct TAccelerationParams {
     double PredictedDelayMultiplier = DefaultPredictedDelayMultiplier;
     ui32 MaxNumOfSlowDisks = DefaultMaxNumOfSlowDisks;
 };
+
+struct TBlobStorageGroupSharedState {
+    std::atomic<ui64> ConnectionEpoch = 0;
+};
+
+using TBlobStorageGroupSharedStatePtr = std::shared_ptr<TBlobStorageGroupSharedState>;
+using TBlobStorageGroupSharedStateSubSystem =
+    NActors::NTask::TServiceMapSubSystem<ui32, TBlobStorageGroupSharedStatePtr>;
 
 class TBlobStorageGroupRequestActor : public TActor<TBlobStorageGroupRequestActor> {
 public:

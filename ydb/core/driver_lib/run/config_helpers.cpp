@@ -4,6 +4,8 @@
 #include <ydb/core/protos/bootstrap.pb.h>
 #include <ydb/core/protos/resource_broker.pb.h>
 
+#include <ydb/library/actors/core/actorsystem.h>
+#include <ydb/library/actors/task/task_system.h>
 #include <ydb/library/actors/util/affinity.h>
 
 
@@ -130,6 +132,25 @@ NActors::TSchedulerConfig CreateSchedulerConfig(const NKikimrConfig::TActorSyste
     const bool useSchedulerActor = config.HasUseSchedulerActor() ? config.GetUseSchedulerActor() : false;
 
     return NActors::TSchedulerConfig(resolution, spinThreshold, progressThreshold, useSchedulerActor);
+}
+
+void AddTaskSystemForUserPool(NActors::TActorSystemSetup& setup, ui32 userPoolId) {
+    ui32 maxThreads = 0;
+
+    for (const auto& pool : setup.CpuManager.Basic) {
+        if (pool.PoolId == userPoolId) {
+            maxThreads = pool.MaxThreadCount > 0 ? static_cast<ui32>(pool.MaxThreadCount) : pool.Threads;
+            break;
+        }
+    }
+
+    Y_ABORT_UNLESS(maxThreads > 0, "Cannot determine max threads for User pool %u", static_cast<unsigned>(userPoolId));
+
+    setup.AfterCreateCallbacks.emplace_back([maxThreads, userPoolId](NActors::TActorSystem& actorSystem) {
+        auto taskSystem = std::make_unique<NActors::NTask::TTaskSystem>();
+        taskSystem->Initialize(&actorSystem, maxThreads, userPoolId);
+        actorSystem.RegisterSubSystem(std::move(taskSystem));
+    });
 }
 
 }  // namespace NActorSystemConfigHelpers
