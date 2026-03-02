@@ -82,13 +82,13 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 .Status = NKikimrProto::OK,
                 .GroupId = 777,
             };
-            const NActors::TActorId proxyId = runtime.Register(new TFakeProxyActor(proxyState), 1);
+            const NActors::TActorId proxyActorId = runtime.Register(new TFakeProxyActor(proxyState), 1);
+            runtime.RegisterService(MakeBlobStorageProxyID(proxyState.GroupId), proxyActorId);
             const NActors::TActorId edgeId = runtime.AllocateEdgeActor(1);
 
             auto executionRelay = std::make_shared<TEvBlobStorage::TExecutionRelay>();
             taskSystem.Enqueue(RunReadTaskAndSendTo(edgeId, TReadTaskArgs{
-                .ProxyActorId = proxyId,
-                .SharedState = nullptr,
+                .GroupId = proxyState.GroupId,
                 .Request = {
                     .Event = MakeGetRequest(),
                     .RestartCounter = 42,
@@ -109,7 +109,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(*proxyState.LastForceGroupGeneration, 123u);
         }
 
-        Y_UNIT_TEST(ForwardsToProxyWhenSharedStateNotReady) {
+        Y_UNIT_TEST(ForwardsToProxyWhenSharedStateNotFound) {
             TTestActorSystem runtime(1);
             runtime.Start();
 
@@ -123,16 +123,12 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 .Status = NKikimrProto::ERROR,
                 .GroupId = 11,
             };
-            const NActors::TActorId proxyId = runtime.Register(new TFakeProxyActor(proxyState), 1);
+            const NActors::TActorId proxyActorId = runtime.Register(new TFakeProxyActor(proxyState), 1);
+            runtime.RegisterService(MakeBlobStorageProxyID(proxyState.GroupId), proxyActorId);
             const NActors::TActorId edgeId = runtime.AllocateEdgeActor(1);
 
-            const auto sharedState = std::make_shared<TBlobStorageGroupSharedState>(TBlobStorageGroupSharedState{
-                .ConnectionEpoch = 1,
-                .IsReadyForGet = false,
-            });
             taskSystem.Enqueue(RunReadTaskAndSendTo(edgeId, TReadTaskArgs{
-                .ProxyActorId = proxyId,
-                .SharedState = sharedState,
+                .GroupId = proxyState.GroupId,
                 .Request = {
                     .Event = MakeGetRequest(),
                 }
@@ -145,7 +141,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 1u);
         }
 
-        Y_UNIT_TEST(ReturnsErrorWhenProxyActorIsMissing) {
+        Y_UNIT_TEST(ForwardsToProxyWithGroupIdZeroByDefault) {
             TTestActorSystem runtime(1);
             runtime.Start();
 
@@ -155,7 +151,14 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             NActors::NTask::TTaskSystem taskSystem;
             taskSystem.Initialize(actorSystem, 1);
 
+            TFakeProxyState proxyState{
+                .Status = NKikimrProto::OK,
+                .GroupId = 0,
+            };
+            const NActors::TActorId proxyActorId = runtime.Register(new TFakeProxyActor(proxyState), 1);
+            runtime.RegisterService(MakeBlobStorageProxyID(proxyState.GroupId), proxyActorId);
             const NActors::TActorId edgeId = runtime.AllocateEdgeActor(1);
+
             taskSystem.Enqueue(RunReadTaskAndSendTo(edgeId, TReadTaskArgs{
                 .Request = {
                     .Event = MakeGetRequest(),
@@ -164,8 +167,9 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
             auto ev = runtime.WaitForEdgeActorEvent<TEvBlobStorage::TEvGetResult>(edgeId);
             UNIT_ASSERT(ev);
-            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::ERROR);
-            UNIT_ASSERT_C(ev->Get()->ErrorReason.Contains("proxy actor id is not set"), ev->Get()->ErrorReason);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->GroupId, 0u);
+            UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 1u);
         }
 
     } // Y_UNIT_TEST_SUITE(ReadTask)

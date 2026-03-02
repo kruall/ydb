@@ -22,8 +22,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
     };
 
     struct TReadTaskArgs {
-        TActorId ProxyActorId;
-        TBlobStorageGroupSharedStatePtr SharedState;
+        ui32 GroupId = 0;
         TReadTaskRequestArgs Request;
     };
 

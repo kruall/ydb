@@ -1,16 +1,19 @@
 #include "read.h"
 
 #include "../dsproxy_get_impl.h"
+#include <ydb/core/base/services/blobstorage_service_id.h>
 #include <ydb/library/actors/task/task_system.h>
 
 namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
     namespace {
 
+        ui32 ResolveGroupId(const TReadTaskArgs& args) {
+            return args.GroupId;
+        }
+
         TReadTaskResult MakeErrorResult(const TReadTaskArgs& args, NKikimrProto::EReplyStatus status, TString errorReason) {
-            const ui32 groupId = args.SharedState && args.SharedState->GroupInfo
-                ? args.SharedState->GroupInfo->GroupID.GetRawId()
-                : 0;
+            const ui32 groupId = ResolveGroupId(args);
 
             if (args.Request.Event) {
                 return args.Request.Event->MakeErrorResponse(status, errorReason, TGroupId::FromValue(groupId));
@@ -31,12 +34,8 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 SetCommonResultFields(args, *result);
                 co_return result;
             }
-            if (!args.ProxyActorId) {
-                auto result = MakeErrorResult(args, NKikimrProto::ERROR, reason + ": proxy actor id is not set");
-                SetCommonResultFields(args, *result);
-                co_return result;
-            }
-
+            const ui32 groupId = ResolveGroupId(args);
+            const TActorId proxyActorId = MakeBlobStorageProxyID(groupId);
             auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
             auto request = std::make_unique<TEvBlobStorage::TEvGet>(TEvBlobStorage::CloneEventPolicy, *args.Request.Event);
             request->RestartCounter = args.Request.RestartCounter;
@@ -44,7 +43,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             request->ForceGroupGeneration = args.Request.ForceGroupGeneration;
 
             const auto& ctx = NActors::TActivationContext::AsActorContext();
-            ctx.Send(args.ProxyActorId, request.release(), 0, queue.Cookie());
+            ctx.Send(proxyActorId, request.release(), 0, queue.Cookie());
 
             auto response = co_await NActors::NTask::WaitEvent<TEvBlobStorage::TEvGetResult>(queue);
             Y_ABORT_UNLESS(response, "proxy must return TEvGetResult");
@@ -90,22 +89,28 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             SetCommonResultFields(args, *result);
             co_return result;
         }
-        if (!args.SharedState) {
+        TBlobStorageGroupSharedStatePtr sharedState;
+        if (auto* subSystem = NActors::TActivationContext::ActorSystem()
+            ->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>())
+        {
+            sharedState = subSystem->Find(ResolveGroupId(args));
+        }
+        if (!sharedState) {
             co_return co_await ForwardGetToProxy(args, "shared state is missing");
         }
 
-        const auto& sharedState = *args.SharedState;
-        if (!sharedState.IsReadyForGet || !sharedState.GroupInfo || !sharedState.GroupQueues) {
+        const auto& resolvedSharedState = *sharedState;
+        if (!resolvedSharedState.IsReadyForGet || !resolvedSharedState.GroupInfo || !resolvedSharedState.GroupQueues) {
             co_return co_await ForwardGetToProxy(args, "shared state is not ready for get");
         }
 
         TLogContext logCtx(NKikimrServices::BS_PROXY_GET, args.Request.LogAccEnabled);
         TGetImpl getImpl(
-            sharedState.GroupInfo,
-            sharedState.GroupQueues,
+            resolvedSharedState.GroupInfo,
+            resolvedSharedState.GroupQueues,
             args.Request.Event.get(),
-            TNodeLayoutInfoPtr(sharedState.NodeLayout),
-            sharedState.AccelerationParams,
+            TNodeLayoutInfoPtr(resolvedSharedState.NodeLayout),
+            resolvedSharedState.AccelerationParams,
             logCtx.RequestPrefix);
 
         auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
@@ -118,7 +123,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             SetCommonResultFields(args, *result);
             co_return result;
         }
-        SendVGets(sharedState, queue, vGets, args.Request.TraceId);
+        SendVGets(resolvedSharedState, queue, vGets, args.Request.TraceId);
 
         for (;;) {
             auto ev = co_await NActors::NTask::WaitEvent<TEvBlobStorage::TEvVGetResult>(queue);
@@ -144,7 +149,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 SetCommonResultFields(args, *result);
                 co_return result;
             }
-            SendVGets(sharedState, queue, vGets, args.Request.TraceId);
+            SendVGets(resolvedSharedState, queue, vGets, args.Request.TraceId);
 
             if (getResult) {
                 TReadTaskResult result(getResult.Release());
