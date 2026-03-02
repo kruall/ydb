@@ -1,4 +1,5 @@
 #include "auto_config_initializer.h"
+#include "config_helpers.h"
 #include "run.h"
 #include "grpc_servers_manager.h"
 #include "service_initializer.h"
