@@ -80,30 +80,57 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             co_return;
         }
 
-        ui32 CountProxyGetEvents(TEnvironmentSetup& env, ui32 groupId, const std::function<void()>& action) {
-            const NActors::TActorId proxyServiceId = MakeBlobStorageProxyID(groupId);
-            const NActors::TActorId proxyActorId = GetActorSystem(env).LookupLocalService(proxyServiceId);
-            ui32 count = 0;
-
-            env.Runtime->FilterFunction = [&](ui32, std::unique_ptr<IEventHandle>& ev) {
-                if (ev && ev->GetTypeRewrite() == TEvBlobStorage::EvGet) {
-                    const NActors::TActorId& recipient = ev->Recipient;
-                    const NActors::TActorId& recipientRewrite = ev->GetRecipientRewrite();
-                    if (recipient == proxyServiceId
-                        || recipientRewrite == proxyServiceId
-                        || recipient == proxyActorId
-                        || recipientRewrite == proxyActorId)
-                    {
-                        ++count;
-                    }
-                }
-                return true;
-            };
-
-            action();
-            env.Runtime->FilterFunction = {};
-            return count;
+        task<void> EraseStateAndRunReadTaskAndSendTo(
+                const NActors::TActorId& target,
+                TBlobStorageGroupSharedStateSubSystem* subSystem,
+                ui32 groupId,
+                TReadTaskArgs args) {
+            subSystem->Erase(groupId);
+            auto result = co_await RunReadTask(std::move(args));
+            UNIT_ASSERT(result);
+            NActors::TActivationContext::AsActorContext().Send(target, result.release());
+            co_return;
         }
+
+        class TProxyGetEventCounterGuard {
+        public:
+            TProxyGetEventCounterGuard(TEnvironmentSetup& env, ui32 groupId)
+                : Env_(env)
+                , PrevFilter_(std::move(env.Runtime->FilterFunction))
+                , ProxyServiceId_(MakeBlobStorageProxyID(groupId))
+                , ProxyActorId_(GetActorSystem(env).LookupLocalService(ProxyServiceId_))
+            {
+                Env_.Runtime->FilterFunction = [this](ui32, std::unique_ptr<IEventHandle>& ev) {
+                    if (ev && ev->GetTypeRewrite() == TEvBlobStorage::EvGet) {
+                        const NActors::TActorId& recipient = ev->Recipient;
+                        const NActors::TActorId& recipientRewrite = ev->GetRecipientRewrite();
+                        if (recipient == ProxyServiceId_
+                            || recipientRewrite == ProxyServiceId_
+                            || recipient == ProxyActorId_
+                            || recipientRewrite == ProxyActorId_)
+                        {
+                            ++Count_;
+                        }
+                    }
+                    return true;
+                };
+            }
+
+            ~TProxyGetEventCounterGuard() {
+                Env_.Runtime->FilterFunction = std::move(PrevFilter_);
+            }
+
+            ui32 GetCount() const {
+                return Count_;
+            }
+
+        private:
+            TEnvironmentSetup& Env_;
+            std::function<bool(ui32, std::unique_ptr<IEventHandle>&)> PrevFilter_;
+            NActors::TActorId ProxyServiceId_;
+            NActors::TActorId ProxyActorId_;
+            ui32 Count_ = 0;
+        };
 
     } // namespace
 
@@ -123,14 +150,13 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             auto& taskSystem = GetTaskSystem(env);
             const NActors::TActorId edge = test.Runtime->AllocateEdgeActor(1);
 
-            const ui32 proxyGetEvents = CountProxyGetEvents(env, groupId, [&] {
-                taskSystem.Enqueue(RunReadTaskAndSendTo(edge, TReadTaskArgs{
-                    .GroupId = groupId,
-                    .Request = {
-                        .Event = MakeGetRequest(blobId, 8, 16),
-                    }
-                }));
-            });
+            TProxyGetEventCounterGuard proxyGetCounter(env, groupId);
+            taskSystem.Enqueue(RunReadTaskAndSendTo(edge, TReadTaskArgs{
+                .GroupId = groupId,
+                .Request = {
+                    .Event = MakeGetRequest(blobId, 8, 16),
+                }
+            }));
 
             auto ev = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvGetResult>(edge);
             UNIT_ASSERT(ev);
@@ -138,7 +164,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->ResponseSz, 1u);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Status, NKikimrProto::OK);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Buffer.ConvertToString(), data.substr(8, 16));
-            UNIT_ASSERT_VALUES_EQUAL(proxyGetEvents, 0u);
+            UNIT_ASSERT_VALUES_EQUAL(proxyGetCounter.GetCount(), 0u);
         }
 
         Y_UNIT_TEST(FallsBackToRealProxyWhenSharedStateMissing) {
@@ -152,23 +178,19 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
             WaitForSharedStateReady(env, groupId);
             auto& subSystem = GetSharedStateSubSystem(env);
-            subSystem.Erase(groupId);
-            UNIT_ASSERT(!subSystem.Find(groupId));
 
             auto request = MakeGetRequest(blobId);
             request->ReaderTabletData = TEvBlobStorage::TEvGet::TReaderTabletData(777, 3);
 
             auto& taskSystem = GetTaskSystem(env);
             const NActors::TActorId edge = test.Runtime->AllocateEdgeActor(1);
-
-            const ui32 proxyGetEvents = CountProxyGetEvents(env, groupId, [&] {
-                taskSystem.Enqueue(RunReadTaskAndSendTo(edge, TReadTaskArgs{
-                    .GroupId = groupId,
-                    .Request = {
-                        .Event = std::move(request),
-                    }
-                }));
-            });
+            TProxyGetEventCounterGuard proxyGetCounter(env, groupId);
+            taskSystem.Enqueue(EraseStateAndRunReadTaskAndSendTo(edge, &subSystem, groupId, TReadTaskArgs{
+                .GroupId = groupId,
+                .Request = {
+                    .Event = std::move(request),
+                }
+            }));
 
             auto ev = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvGetResult>(edge);
             UNIT_ASSERT(ev);
@@ -176,7 +198,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->ResponseSz, 1u);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Status, NKikimrProto::OK);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Buffer.ConvertToString(), data);
-            UNIT_ASSERT(proxyGetEvents > 0);
+            UNIT_ASSERT(proxyGetCounter.GetCount() > 0);
         }
 
         Y_UNIT_TEST(ReturnsErrorForMissingRequestEvent) {
