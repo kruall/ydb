@@ -33,6 +33,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             auto base = getImpl.RestartQuery(restartCounter);
             Y_ABORT_UNLESS(base && base->Type() == TEvBlobStorage::EvGet, "RestartQuery must return TEvGet");
             auto request = std::unique_ptr<TEvBlobStorage::TEvGet>(static_cast<TEvBlobStorage::TEvGet*>(base.release()));
+            request->IsIndexOnly = args.Request.Event->IsIndexOnly;
             request->ExecutionRelay = args.Request.ExecutionRelay;
             request->ForceGroupGeneration = args.Request.ForceGroupGeneration;
             return request;
