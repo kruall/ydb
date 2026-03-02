@@ -28,8 +28,26 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             result.ExecutionRelay = args.Request.ExecutionRelay;
         }
 
-        NActors::NTask::task<TReadTaskResult> ForwardGetToProxy(TReadTaskArgs& args, TString reason) {
-            if (!args.Request.Event) {
+        std::unique_ptr<TEvBlobStorage::TEvGet> BuildRestartRequest(
+                TGetImpl& getImpl, const TReadTaskArgs& args, ui32 restartCounter) {
+            auto base = getImpl.RestartQuery(restartCounter);
+            Y_ABORT_UNLESS(base && base->Type() == TEvBlobStorage::EvGet, "RestartQuery must return TEvGet");
+            auto request = std::unique_ptr<TEvBlobStorage::TEvGet>(static_cast<TEvBlobStorage::TEvGet*>(base.release()));
+            request->ExecutionRelay = args.Request.ExecutionRelay;
+            request->ForceGroupGeneration = args.Request.ForceGroupGeneration;
+            return request;
+        }
+
+        TReadTaskResult MakeErrorResultFromRequest(TEvBlobStorage::TEvGet& request,
+                const TReadTaskArgs& args, NKikimrProto::EReplyStatus status, TString errorReason) {
+            auto result = request.MakeErrorResponse(status, errorReason, TGroupId::FromValue(ResolveGroupId(args)));
+            SetCommonResultFields(args, *result);
+            return result;
+        }
+
+        NActors::NTask::task<TReadTaskResult> ForwardGetToProxy(
+                TReadTaskArgs& args, std::unique_ptr<TEvBlobStorage::TEvGet> request, TString reason) {
+            if (!request) {
                 auto result = MakeErrorResult(args, NKikimrProto::ERROR, reason + ": missing original request");
                 SetCommonResultFields(args, *result);
                 co_return result;
@@ -37,8 +55,6 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             const ui32 groupId = ResolveGroupId(args);
             const TActorId proxyActorId = MakeBlobStorageProxyID(groupId);
             auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
-            auto request = std::make_unique<TEvBlobStorage::TEvGet>(TEvBlobStorage::CloneEventPolicy, *args.Request.Event);
-            request->RestartCounter = args.Request.RestartCounter;
             request->ExecutionRelay = args.Request.ExecutionRelay;
             request->ForceGroupGeneration = args.Request.ForceGroupGeneration;
 
@@ -96,12 +112,16 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             sharedState = subSystem->Find(ResolveGroupId(args));
         }
         if (!sharedState) {
-            co_return co_await ForwardGetToProxy(args, "shared state is missing");
+            auto request = std::make_unique<TEvBlobStorage::TEvGet>(TEvBlobStorage::CloneEventPolicy, *args.Request.Event);
+            request->RestartCounter = args.Request.RestartCounter;
+            co_return co_await ForwardGetToProxy(args, std::move(request), "shared state is missing");
         }
 
         const auto& resolvedSharedState = *sharedState;
         if (!resolvedSharedState.IsReadyForGet || !resolvedSharedState.GroupInfo || !resolvedSharedState.GroupQueues) {
-            co_return co_await ForwardGetToProxy(args, "shared state is not ready for get");
+            auto request = std::make_unique<TEvBlobStorage::TEvGet>(TEvBlobStorage::CloneEventPolicy, *args.Request.Event);
+            request->RestartCounter = args.Request.RestartCounter;
+            co_return co_await ForwardGetToProxy(args, std::move(request), "shared state is not ready for get");
         }
 
         TLogContext logCtx(NKikimrServices::BS_PROXY_GET, args.Request.LogAccEnabled);
@@ -119,9 +139,8 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
         getImpl.GenerateInitialRequests(logCtx, vGets);
         if (!vPuts.empty()) {
-            auto result = MakeErrorResult(args, NKikimrProto::ERROR, "VPut is not supported in task read yet");
-            SetCommonResultFields(args, *result);
-            co_return result;
+            auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
+            co_return MakeErrorResultFromRequest(*request, args, NKikimrProto::ERROR, "VPut is not supported in task read yet");
         }
         SendVGets(resolvedSharedState, queue, vGets, args.Request.TraceId);
 
@@ -133,21 +152,23 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
             const NKikimrProto::EReplyStatus status = record.GetStatus();
             if (status == NKikimrProto::RACE || status == NKikimrProto::NOTREADY) {
-                co_return co_await ForwardGetToProxy(args, "fallback requested for terminal VGet status");
+                const ui32 restartCounter = status == NKikimrProto::RACE
+                    ? args.Request.RestartCounter + 1
+                    : args.Request.RestartCounter;
+                auto request = BuildRestartRequest(getImpl, args, restartCounter);
+                co_return co_await ForwardGetToProxy(args, std::move(request), "fallback requested for terminal VGet status");
             }
             if (status == NKikimrProto::BLOCKED || status == NKikimrProto::DEADLINE) {
-                auto result = MakeErrorResult(args, status, "terminal status from VGetResult");
-                SetCommonResultFields(args, *result);
-                co_return result;
+                auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
+                co_return MakeErrorResultFromRequest(*request, args, status, "terminal status from VGetResult");
             }
 
             TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
             getImpl.OnVGetResult(logCtx, *ev->Get(), vGets, vPuts, getResult);
 
             if (!vPuts.empty()) {
-                auto result = MakeErrorResult(args, NKikimrProto::ERROR, "VPut is not supported in task read yet");
-                SetCommonResultFields(args, *result);
-                co_return result;
+                auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
+                co_return MakeErrorResultFromRequest(*request, args, NKikimrProto::ERROR, "VPut is not supported in task read yet");
             }
             SendVGets(resolvedSharedState, queue, vGets, args.Request.TraceId);
 
