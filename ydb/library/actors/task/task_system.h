@@ -109,10 +109,8 @@ namespace NActors::NTask {
         void RunTask(std::coroutine_handle<> handle, const TActorId& executorActorId) {
             Y_ABORT_UNLESS(IsExecutorActor(executorActorId), "TTaskSystem tasks must run only in task executor actors");
 
-            const TRunContext prevContext = CurrentRunContext_;
-            CurrentRunContext_ = TRunContext{ this, executorActorId };
+            const TRunContextGuard contextGuard(this, executorActorId);
             handle.resume();
-            CurrentRunContext_ = prevContext;
 
             if (handle.done()) {
                 handle.destroy();
@@ -161,6 +159,25 @@ namespace NActors::NTask {
                 , ExecutorActorId(executorActorId)
             {
             }
+        };
+
+        class TRunContextGuard {
+        public:
+            TRunContextGuard(TTaskSystem* system, const TActorId& executorActorId)
+                : PrevContext_(CurrentRunContext_)
+            {
+                CurrentRunContext_ = TRunContext(system, executorActorId);
+            }
+
+            TRunContextGuard(const TRunContextGuard&) = delete;
+            TRunContextGuard& operator=(const TRunContextGuard&) = delete;
+
+            ~TRunContextGuard() {
+                CurrentRunContext_ = PrevContext_;
+            }
+
+        private:
+            TRunContext PrevContext_;
         };
 
         static inline thread_local TRunContext CurrentRunContext_;
