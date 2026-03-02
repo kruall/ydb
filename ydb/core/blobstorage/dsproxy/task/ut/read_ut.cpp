@@ -91,14 +91,14 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                     State_.Status,
                     vdiskId,
                     TAppData::TimeProvider->Now(),
-                    0,
+                    ui32(0),
                     nullptr,
                     nullptr,
                     nullptr,
                     nullptr,
-                    {},
-                    0U,
-                    0U);
+                    TMaybe<ui64>(),
+                    ui32(0),
+                    ui64(0));
                 Send(ev->Sender, result.release(), 0, ev->Cookie);
             }
 
@@ -132,7 +132,12 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
         TBlobStorageGroupSharedStatePtr MakeReadySharedState(TTestActorSystem& runtime, const TActorId& queueActorId) {
             TVector<TActorId> vdisks = {runtime.AllocateEdgeActor(1)};
-            auto groupInfo = MakeIntrusive<TBlobStorageGroupInfo>(TBlobStorageGroupType::ErasureNone, 1, 1, 1, &vdisks);
+            auto groupInfo = MakeIntrusive<TBlobStorageGroupInfo>(
+                TBlobStorageGroupType::ErasureNone,
+                ui32(1),
+                ui32(1),
+                ui32(1),
+                &vdisks);
             auto groupQueues = MakeIntrusive<TGroupQueues>(groupInfo->GetTopology());
 
             for (auto& failDomain : groupQueues->FailDomains) {
