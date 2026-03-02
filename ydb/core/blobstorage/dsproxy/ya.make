@@ -80,6 +80,7 @@ END()
 
 RECURSE(
     mock
+    task
 )
 
 RECURSE_FOR_TESTS(

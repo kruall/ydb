@@ -107,16 +107,44 @@ namespace {
     };
 
     task<void> WaitWakeupInTaskExecutor(const NActors::TActorId& responder, int& out) {
-        const ui64 cookie = NActors::NTask::TTaskSystem::GetUniqueCookieForMessage();
-        UNIT_ASSERT(cookie != 0);
+        auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        const ui64 cookie = queue.Cookie();
 
         const auto& ctx = NActors::TActivationContext::AsActorContext();
         ctx.Send(responder, new NActors::TEvents::TEvPing, 0, cookie);
 
-        auto ev = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(cookie);
+        auto ev = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(queue);
         UNIT_ASSERT(ev);
 
         out = 42;
+        co_return;
+    }
+
+    task<void> WaitTwoQueuedWakeupsInTaskExecutor(int& out) {
+        auto dataQueue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        auto syncQueue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        const ui64 dataCookie = dataQueue.Cookie();
+        const ui64 syncCookie = syncQueue.Cookie();
+        UNIT_ASSERT(dataCookie != 0);
+        UNIT_ASSERT(syncCookie != 0);
+        UNIT_ASSERT(dataCookie != syncCookie);
+
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+
+        // Send events for dataCookie before awaiting it; they must be buffered in the cookie queue.
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, dataCookie);
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, dataCookie);
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, syncCookie);
+
+        auto sync = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(syncQueue);
+        UNIT_ASSERT(sync);
+
+        auto ev1 = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(dataQueue);
+        UNIT_ASSERT(ev1);
+        auto ev2 = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(dataQueue);
+        UNIT_ASSERT(ev2);
+
+        out = 2;
         co_return;
     }
 
@@ -211,6 +239,22 @@ Y_UNIT_TEST_SUITE(Task) {
 
         runtime->DispatchEvents();
         UNIT_ASSERT_VALUES_EQUAL(out, 42);
+    }
+
+    Y_UNIT_TEST(TaskWaitEventQueueInExecutorActor) {
+        auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
+        runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
+        runtime->Initialize();
+
+        NActors::NTask::TTaskSystem sys;
+        sys.Initialize(runtime->GetAnyNodeActorSystem(), 1);
+
+        int out = 0;
+        sys.Enqueue(WaitTwoQueuedWakeupsInTaskExecutor(out));
+        UNIT_ASSERT_VALUES_EQUAL(out, 0);
+
+        runtime->DispatchEvents();
+        UNIT_ASSERT_VALUES_EQUAL(out, 2);
     }
 
     Y_UNIT_TEST(ServiceMapSubSystemStoresByTemplateKeyValue) {
