@@ -81,12 +81,21 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
         }
 
         ui32 CountProxyGetEvents(TEnvironmentSetup& env, ui32 groupId, const std::function<void()>& action) {
-            const NActors::TActorId proxyId = MakeBlobStorageProxyID(groupId);
+            const NActors::TActorId proxyServiceId = MakeBlobStorageProxyID(groupId);
+            const NActors::TActorId proxyActorId = GetActorSystem(env).LookupLocalService(proxyServiceId);
             ui32 count = 0;
 
             env.Runtime->FilterFunction = [&](ui32, std::unique_ptr<IEventHandle>& ev) {
-                if (ev && ev->GetTypeRewrite() == TEvBlobStorage::EvGet && ev->GetRecipientRewrite() == proxyId) {
-                    ++count;
+                if (ev && ev->GetTypeRewrite() == TEvBlobStorage::EvGet) {
+                    const NActors::TActorId& recipient = ev->Recipient;
+                    const NActors::TActorId& recipientRewrite = ev->GetRecipientRewrite();
+                    if (recipient == proxyServiceId
+                        || recipientRewrite == proxyServiceId
+                        || recipient == proxyActorId
+                        || recipientRewrite == proxyActorId)
+                    {
+                        ++count;
+                    }
                 }
                 return true;
             };
