@@ -123,6 +123,7 @@ class TBlobStorageGroupProxy : public TActorBootstrapped<TBlobStorageGroupProxy>
 
     TBlobStorageProxyControlWrappers Controls;
     TBlobStorageGroupSharedStatePtr SharedState = std::make_shared<TBlobStorageGroupSharedState>();
+    bool SharedStateRegistered = false;
 
     TAccelerationParams GetAccelerationParams();
 
@@ -179,6 +180,9 @@ class TBlobStorageGroupProxy : public TActorBootstrapped<TBlobStorageGroupProxy>
     void SetStateUnconfigured();
     void SetStateUnconfiguredTimeout();
     void SetStateWork();
+    void ReplaceSharedState(bool ready, ui64 connectionEpoch);
+    void PublishSharedStateUpdate();
+    void PublishSharedStateErase();
     void RegisterSharedState();
     void UnregisterSharedState();
 

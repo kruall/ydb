@@ -2,6 +2,7 @@
 #include "dsproxy_monactor.h"
 
 #include <ydb/core/blobstorage/bridge/proxy/bridge_proxy.h>
+#include <ydb/library/actors/task/task_system.h>
 
 namespace NKikimr {
 
@@ -32,6 +33,7 @@ namespace NKikimr {
         EstablishingSessionStartTime = TActivationContext::Now();
         ConfigureQueryTimeoutEv = nullptr;
         ClearTimeoutCounters();
+        ReplaceSharedState(false, SharedState ? SharedState->ConnectionEpoch : 0);
         EstablishingSessionsStateTs = TActivationContext::Monotonic();
         EstablishingSessionsTimeoutEv = new TEvEstablishingSessionTimeout();
         Become(&TThis::StateEstablishingSessions, ProxyEstablishSessionsTimeout, EstablishingSessionsTimeoutEv);
@@ -46,6 +48,7 @@ namespace NKikimr {
         EstablishingSessionsTimeoutEv = nullptr;
         ConfigureQueryTimeoutEv = nullptr;
         ClearTimeoutCounters();
+        ReplaceSharedState(false, SharedState ? SharedState->ConnectionEpoch : 0);
         Become(&TThis::StateEstablishingSessionsTimeout);
         ++*NodeMon->EstablishingSessionsTimeout;
         InEstablishingSessionsTimeout = true;
@@ -59,6 +62,7 @@ namespace NKikimr {
         ErrorDescription = "StateUnconfigured (DSPE9).";
         EstablishingSessionsTimeoutEv = nullptr;
         ClearTimeoutCounters();
+        ReplaceSharedState(false, SharedState ? SharedState->ConnectionEpoch : 0);
         UnconfiguredStateTs = TActivationContext::Monotonic();
         ConfigureQueryTimeoutEv = new TEvConfigureQueryTimeout();
         Become(&TThis::StateUnconfigured, ProxyConfigurationTimeout, ConfigureQueryTimeoutEv);
@@ -70,6 +74,7 @@ namespace NKikimr {
         EstablishingSessionsTimeoutEv = nullptr;
         ConfigureQueryTimeoutEv = nullptr;
         ClearTimeoutCounters();
+        ReplaceSharedState(false, SharedState ? SharedState->ConnectionEpoch : 0);
         Become(&TThis::StateUnconfiguredTimeout);
         ++*NodeMon->UnconfiguredTimeout;
         InUnconfiguredTimeout = true;
@@ -88,17 +93,63 @@ namespace NKikimr {
         ProcessInitQueue();
     }
 
-    void TBlobStorageGroupProxy::RegisterSharedState() {
-        SharedState->ConnectionEpoch.fetch_add(1, std::memory_order_relaxed);
-        if (auto* subSystem = TActivationContext::ActorSystem()->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>()) {
-            subSystem->Update(GroupId.GetRawId(), SharedState);
+    void TBlobStorageGroupProxy::ReplaceSharedState(bool ready, ui64 connectionEpoch) {
+        const bool canServeGet = ready && Info && Sessions && !IsLimitedKeyless;
+        SharedState = std::make_shared<TBlobStorageGroupSharedState>(TBlobStorageGroupSharedState{
+            .ConnectionEpoch = connectionEpoch,
+            .GroupGeneration = Info ? Info->GroupGeneration : 0,
+            .IsLimitedKeyless = IsLimitedKeyless,
+            .IsReadyForGet = canServeGet,
+        });
+        if (SharedStateRegistered) {
+            PublishSharedStateUpdate();
         }
     }
 
-    void TBlobStorageGroupProxy::UnregisterSharedState() {
-        if (auto* subSystem = TActivationContext::ActorSystem()->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>()) {
-            subSystem->Erase(GroupId.GetRawId());
+    void TBlobStorageGroupProxy::PublishSharedStateUpdate() {
+        auto* actorSystem = TActivationContext::ActorSystem();
+        auto* subSystem = actorSystem->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>();
+        auto* taskSystem = actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>();
+        if (!subSystem || !taskSystem || !taskSystem->IsInitialized()) {
+            return;
         }
+
+        const ui32 groupId = GroupId.GetRawId();
+        TBlobStorageGroupSharedStatePtr state = SharedState;
+        taskSystem->Enqueue([subSystem, groupId, state = std::move(state)]() -> NActors::NTask::task<void> {
+            subSystem->Update(groupId, state);
+            co_return;
+        }());
+    }
+
+    void TBlobStorageGroupProxy::PublishSharedStateErase() {
+        auto* actorSystem = TActivationContext::ActorSystem();
+        auto* subSystem = actorSystem->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>();
+        auto* taskSystem = actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>();
+        if (!subSystem || !taskSystem || !taskSystem->IsInitialized()) {
+            return;
+        }
+
+        const ui32 groupId = GroupId.GetRawId();
+        taskSystem->Enqueue([subSystem, groupId]() -> NActors::NTask::task<void> {
+            subSystem->Erase(groupId);
+            co_return;
+        }());
+    }
+
+    void TBlobStorageGroupProxy::RegisterSharedState() {
+        SharedStateRegistered = true;
+        const ui64 nextEpoch = SharedState ? SharedState->ConnectionEpoch + 1 : 1;
+        ReplaceSharedState(true, nextEpoch);
+    }
+
+    void TBlobStorageGroupProxy::UnregisterSharedState() {
+        if (!SharedStateRegistered) {
+            return;
+        }
+        SharedStateRegistered = false;
+        ReplaceSharedState(false, SharedState ? SharedState->ConnectionEpoch : 0);
+        PublishSharedStateErase();
     }
 
     void TBlobStorageGroupProxy::Handle(TEvBlobStorage::TEvConfigureProxy::TPtr ev) {
@@ -191,6 +242,7 @@ namespace NKikimr {
                     break;
             }
         }
+        ReplaceSharedState(CurrentStateFunc() == &TThis::StateWork, SharedState ? SharedState->ConnectionEpoch : 0);
         LOG_INFO_S(*TlsActivationContext, NKikimrServices::BS_PROXY, "Group# " << GroupId
             << " TEvConfigureProxy received"
             << " GroupGeneration# " << (Info ? ToString(Info->GroupGeneration) : "<none>")
@@ -381,19 +433,19 @@ namespace NKikimr {
         Send(ev->Sender, new TEvProxySessionsState(Sessions ? Sessions->GroupQueues : nullptr));
     }
 
-#define SELECT_CONTROL_BY_DEVICE_TYPE(prefix, info) \
-([&](NPDisk::EDeviceType deviceType) -> i64 {       \
-    TInstant now = TActivationContext::Now();       \
-    switch (deviceType) {                           \
-    case NPDisk::DEVICE_TYPE_ROT:                   \
-        return Controls.prefix##HDD.Update(now);    \
-    case NPDisk::DEVICE_TYPE_SSD:                   \
-    case NPDisk::DEVICE_TYPE_NVME:                  \
-        return Controls.prefix##SSD.Update(now);    \
-    default:                                        \
-        return Controls.prefix.Update(now);         \
-    }                                               \
-})(info ? info->GetDeviceType() : NPDisk::DEVICE_TYPE_UNKNOWN)
+    #define SELECT_CONTROL_BY_DEVICE_TYPE(prefix, info) \
+    ([&](NPDisk::EDeviceType deviceType) -> i64 {       \
+        TInstant now = TActivationContext::Now();       \
+        switch (deviceType) {                           \
+        case NPDisk::DEVICE_TYPE_ROT:                   \
+            return Controls.prefix##HDD.Update(now);    \
+        case NPDisk::DEVICE_TYPE_SSD:                   \
+        case NPDisk::DEVICE_TYPE_NVME:                  \
+            return Controls.prefix##SSD.Update(now);    \
+        default:                                        \
+            return Controls.prefix.Update(now);         \
+        }                                               \
+    })(info ? info->GetDeviceType() : NPDisk::DEVICE_TYPE_UNKNOWN)
 
     TAccelerationParams TBlobStorageGroupProxy::GetAccelerationParams() {
         return TAccelerationParams{
@@ -403,6 +455,6 @@ namespace NKikimr {
         };
     }
 
-#undef SELECT_CONTROL_BY_DEVICE_TYPE
+    #undef SELECT_CONTROL_BY_DEVICE_TYPE
 
 } // NKikimr

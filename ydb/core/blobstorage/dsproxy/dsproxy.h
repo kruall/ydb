@@ -180,10 +180,13 @@ struct TAccelerationParams {
 };
 
 struct TBlobStorageGroupSharedState {
-    std::atomic<ui64> ConnectionEpoch = 0;
+    const ui64 ConnectionEpoch = 0;
+    const ui32 GroupGeneration = 0;
+    const bool IsLimitedKeyless = false;
+    const bool IsReadyForGet = false;
 };
 
-using TBlobStorageGroupSharedStatePtr = std::shared_ptr<TBlobStorageGroupSharedState>;
+using TBlobStorageGroupSharedStatePtr = std::shared_ptr<const TBlobStorageGroupSharedState>;
 using TBlobStorageGroupSharedStateSubSystem =
     NActors::NTask::TServiceMapSubSystem<ui32, TBlobStorageGroupSharedStatePtr>;
 
