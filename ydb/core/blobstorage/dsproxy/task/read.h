@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/core/blobstorage/dsproxy/dsproxy.h>
+#include "../dsproxy.h"
 
 #include <ydb/library/actors/task/task.h>
 
@@ -9,7 +9,7 @@
 namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
     struct TReadTaskRequestArgs {
-        TEvBlobStorage::TEvGet* Event = nullptr;
+        std::unique_ptr<TEvBlobStorage::TEvGet> Event;
         TActorId Source;
         ui64 Cookie = 0;
         TMonotonic Now = TMonotonic::Zero();
