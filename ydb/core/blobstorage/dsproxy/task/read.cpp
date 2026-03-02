@@ -65,7 +65,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 Y_ABORT_UNLESS(ev->Record.HasVDiskID());
                 const TVDiskID vdiskId = VDiskIDFromVDiskID(ev->Record.GetVDiskID());
                 const auto queueId = TGroupQueues::TVDisk::TQueues::VDiskQueueId(*ev);
-                const auto& queues = sharedState.GroupQueues
+                auto& queues = sharedState.GroupQueues
                     ->FailDomains[topology.GetFailDomainOrderNumber(vdiskId)]
                     .VDisks[vdiskId.VDisk]
                     .Queues;
@@ -78,7 +78,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                     0,
                     cookie,
                     nullptr,
-                    traceId));
+                    NWilson::TTraceId(traceId))));
             }
         }
 

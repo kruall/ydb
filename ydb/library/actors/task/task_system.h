@@ -427,9 +427,9 @@ namespace NActors::NTask {
         class [[nodiscard]] TTaskEventAwaiter final : public ITaskEventAwaiter {
         public:
             explicit TTaskEventAwaiter(TTaskSystem::TEventQueue& queue)
-                : System(queue.System())
+                : Cookie(queue.Cookie())
+                , System(queue.System())
                 , ExecutorActorId(queue.ExecutorActorId())
-                , Cookie(queue.Cookie())
             {
             }
 
