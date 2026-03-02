@@ -76,7 +76,10 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             const TActorId sender = NActors::TActivationContext::AsActorContext().SelfID;
             const ui64 cookie = queue.Cookie();
 
-            for (auto& ev : vGets) {
+            while (!vGets.empty()) {
+                std::unique_ptr<TEvBlobStorage::TEvVGet> ev = std::move(vGets.front());
+                vGets.pop_front();
+                Y_ABORT_UNLESS(ev, "empty VGet request in queue");
                 Y_ABORT_UNLESS(ev->Record.HasVDiskID());
                 const TVDiskID vdiskId = VDiskIDFromVDiskID(ev->Record.GetVDiskID());
                 const auto queueId = TGroupQueues::TVDisk::TQueues::VDiskQueueId(*ev);

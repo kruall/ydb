@@ -464,7 +464,12 @@ namespace NActors::NTask {
             bool TryConsumeQueued() override {
                 Y_ABORT_UNLESS(System, "Unexpected TryConsumeQueued call after awaiter detach");
                 if (TryTakeQueuedEvent()) {
+                    auto* system = System;
+                    const TActorId executorActorId = ExecutorActorId;
                     Detach();
+                    // Resume continuation under task executor context so subsequent task APIs
+                    // (e.g. CreateEventQueue) observe correct CurrentRunContext.
+                    const TTaskSystem::TRunContextGuard contextGuard(system, executorActorId);
                     Continuation.resume();
                     return true;
                 }
