@@ -77,7 +77,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                     0,
                     cookie,
                     nullptr,
-                    NWilson::TTraceId(traceId))));
+                    NWilson::TTraceId(traceId)));
             }
         }
 
