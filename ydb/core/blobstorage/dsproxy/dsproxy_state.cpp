@@ -5,6 +5,24 @@
 #include <ydb/library/actors/task/task_system.h>
 
 namespace NKikimr {
+    namespace {
+
+        NActors::NTask::task<void> PublishSharedStateUpdateTask(
+                TBlobStorageGroupSharedStateSubSystem* subSystem,
+                ui32 groupId,
+                TBlobStorageGroupSharedStatePtr state) {
+            subSystem->Update(groupId, std::move(state));
+            co_return;
+        }
+
+        NActors::NTask::task<void> PublishSharedStateEraseTask(
+                TBlobStorageGroupSharedStateSubSystem* subSystem,
+                ui32 groupId) {
+            subSystem->Erase(groupId);
+            co_return;
+        }
+
+    } // namespace
 
     void TBlobStorageGroupProxy::Handle5min(TAutoPtr<IEventHandle> ev) {
         if (ev->Cookie == Cookie5min) {
@@ -130,11 +148,7 @@ namespace NKikimr {
         }
 
         const ui32 groupId = GroupId.GetRawId();
-        TBlobStorageGroupSharedStatePtr state = SharedState;
-        taskSystem->Enqueue([subSystem, groupId, state = std::move(state)]() -> NActors::NTask::task<void> {
-            subSystem->Update(groupId, state);
-            co_return;
-        }());
+        taskSystem->Enqueue(PublishSharedStateUpdateTask(subSystem, groupId, SharedState));
     }
 
     void TBlobStorageGroupProxy::PublishSharedStateErase() {
@@ -146,10 +160,7 @@ namespace NKikimr {
         }
 
         const ui32 groupId = GroupId.GetRawId();
-        taskSystem->Enqueue([subSystem, groupId]() -> NActors::NTask::task<void> {
-            subSystem->Erase(groupId);
-            co_return;
-        }());
+        taskSystem->Enqueue(PublishSharedStateEraseTask(subSystem, groupId));
     }
 
     void TBlobStorageGroupProxy::RegisterSharedState() {
