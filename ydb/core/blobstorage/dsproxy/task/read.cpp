@@ -13,7 +13,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 : 0;
 
             if (args.Request.Event) {
-                return args.Request.Event->MakeErrorResponse(status, errorReason, TGroupId(groupId));
+                return args.Request.Event->MakeErrorResponse(status, errorReason, TGroupId::FromValue(groupId));
             }
 
             auto result = std::make_unique<TEvBlobStorage::TEvGetResult>(status, 0, groupId);
@@ -23,6 +23,36 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
         void SetCommonResultFields(const TReadTaskArgs& args, TEvBlobStorage::TEvGetResult& result) {
             result.ExecutionRelay = args.Request.ExecutionRelay;
+        }
+
+        NActors::NTask::task<TReadTaskResult> ForwardGetToProxy(TReadTaskArgs& args, TString reason) {
+            if (!args.Request.Event) {
+                auto result = MakeErrorResult(args, NKikimrProto::ERROR, reason + ": missing original request");
+                SetCommonResultFields(args, *result);
+                co_return result;
+            }
+            if (!args.ProxyActorId) {
+                auto result = MakeErrorResult(args, NKikimrProto::ERROR, reason + ": proxy actor id is not set");
+                SetCommonResultFields(args, *result);
+                co_return result;
+            }
+
+            auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
+            auto request = std::make_unique<TEvBlobStorage::TEvGet>(TEvBlobStorage::CloneEventPolicy, *args.Request.Event);
+            request->RestartCounter = args.Request.RestartCounter;
+            request->ExecutionRelay = args.Request.ExecutionRelay;
+            request->ForceGroupGeneration = args.Request.ForceGroupGeneration;
+
+            const auto& ctx = NActors::TActivationContext::AsActorContext();
+            ctx.Send(args.ProxyActorId, request.release(), 0, queue.Cookie());
+
+            auto response = co_await NActors::NTask::WaitEvent<TEvBlobStorage::TEvGetResult>(queue);
+            Y_ABORT_UNLESS(response, "proxy must return TEvGetResult");
+
+            TReadTaskResult result(response->Release().Release());
+            Y_ABORT_UNLESS(result, "proxy TEvGetResult payload is empty");
+            SetCommonResultFields(args, *result);
+            co_return result;
         }
 
         void SendVGets(const TBlobStorageGroupSharedState& sharedState, NActors::NTask::TTaskSystem::TEventQueue& queue,
@@ -55,17 +85,18 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
     } // namespace
 
     NActors::NTask::task<TReadTaskResult> RunReadTask(TReadTaskArgs args) {
-        if (!args.SharedState || !args.Request.Event) {
+        if (!args.Request.Event) {
             auto result = MakeErrorResult(args, NKikimrProto::ERROR, "missing read task arguments");
             SetCommonResultFields(args, *result);
             co_return result;
         }
+        if (!args.SharedState) {
+            co_return co_await ForwardGetToProxy(args, "shared state is missing");
+        }
 
         const auto& sharedState = *args.SharedState;
         if (!sharedState.IsReadyForGet || !sharedState.GroupInfo || !sharedState.GroupQueues) {
-            auto result = MakeErrorResult(args, NKikimrProto::ERROR, "shared state is not ready for get");
-            SetCommonResultFields(args, *result);
-            co_return result;
+            co_return co_await ForwardGetToProxy(args, "shared state is not ready for get");
         }
 
         TLogContext logCtx(NKikimrServices::BS_PROXY_GET, args.Request.LogAccEnabled);
@@ -96,16 +127,11 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             Y_ABORT_UNLESS(record.HasStatus());
 
             const NKikimrProto::EReplyStatus status = record.GetStatus();
-            if (status == NKikimrProto::RACE || status == NKikimrProto::BLOCKED || status == NKikimrProto::DEADLINE) {
-                auto result = MakeErrorResult(args, status, "terminal status from VGetResult");
-                if (status == NKikimrProto::RACE && record.HasVDiskID()) {
-                    result->RacingGeneration = VDiskIDFromVDiskID(record.GetVDiskID()).GroupGeneration;
-                }
-                SetCommonResultFields(args, *result);
-                co_return result;
+            if (status == NKikimrProto::RACE || status == NKikimrProto::NOTREADY) {
+                co_return co_await ForwardGetToProxy(args, "fallback requested for terminal VGet status");
             }
-            if (status == NKikimrProto::NOTREADY) {
-                auto result = MakeErrorResult(args, NKikimrProto::ERROR, "queue is not ready");
+            if (status == NKikimrProto::BLOCKED || status == NKikimrProto::DEADLINE) {
+                auto result = MakeErrorResult(args, status, "terminal status from VGetResult");
                 SetCommonResultFields(args, *result);
                 co_return result;
             }
