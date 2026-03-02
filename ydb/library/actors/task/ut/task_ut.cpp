@@ -1,6 +1,8 @@
 #include <ydb/library/actors/task/task.h>
 #include <ydb/library/actors/task/service_map_subsystem.h>
 #include <ydb/library/actors/task/task_system.h>
+#include <ydb/library/actors/core/actor.h>
+#include <ydb/library/actors/core/hfunc.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 #include <ydb/library/actors/testlib/test_runtime.h>
@@ -75,32 +77,45 @@ namespace {
         co_return x + 1;
     }
 
-    task<void> AwaitManualPromiseAndStore(TManualPromise<int>& p, int& out) {
-        out = co_await p;
-        co_return;
-    }
-
     task<void> AwaitManualPromiseAndStorePlusOne(TManualPromise<int>& p, std::optional<int>& out) {
         out = (co_await p) + 1;
         co_return;
     }
 
-    task<void> AwaitTwoAndStore(TManualPromise<int>& p1, TManualPromise<int>& p2, int& out1, int& out2) {
-        co_await NActors::NTask::WhenAll(
-            AwaitManualPromiseAndStore(p1, out1),
-            AwaitManualPromiseAndStore(p2, out2));
-        co_return;
-    }
-
-    task<void> AwaitThreeAndStore(TManualPromise<int>& p1, TManualPromise<int>& p2, TManualPromise<int>& p3, int& out1, int& out2, int& out3) {
-        co_await NActors::NTask::WhenAll(
-            AwaitManualPromiseAndStore(p1, out1),
-            AwaitManualPromiseAndStore(p2, out2),
-            AwaitManualPromiseAndStore(p3, out3));
-        co_return;
-    }
-
     task<void> SetValue42(int& out) {
+        out = 42;
+        co_return;
+    }
+
+    class TPingResponderActor final : public NActors::TActor<TPingResponderActor> {
+    public:
+        TPingResponderActor()
+            : TActor(&TThis::StateWork)
+        {
+        }
+
+        STFUNC(StateWork) {
+            switch (ev->GetTypeRewrite()) {
+                hFunc(NActors::TEvents::TEvPing, HandlePing);
+            }
+        }
+
+    private:
+        void HandlePing(NActors::TEvents::TEvPing::TPtr& ev) {
+            Send(ev->Sender, new NActors::TEvents::TEvWakeup, 0, ev->Cookie);
+        }
+    };
+
+    task<void> WaitWakeupInTaskExecutor(const NActors::TActorId& responder, int& out) {
+        const ui64 cookie = NActors::NTask::TTaskSystem::GetUniqueCookieForMessage();
+        UNIT_ASSERT(cookie != 0);
+
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+        ctx.Send(responder, new NActors::TEvents::TEvPing, 0, cookie);
+
+        auto ev = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(cookie);
+        UNIT_ASSERT(ev);
+
         out = 42;
         co_return;
     }
@@ -139,14 +154,6 @@ Y_UNIT_TEST_SUITE(Task) {
         UNIT_ASSERT_VALUES_EQUAL(t.ExtractValue(), 43);
     }
 
-    Y_UNIT_TEST(TaskSystemRunsInlineWithoutExecutors) {
-        NActors::NTask::TTaskSystem sys;
-
-        int out = 0;
-        sys.Enqueue(SetValue42(out));
-        UNIT_ASSERT_VALUES_EQUAL(out, 42);
-    }
-
     Y_UNIT_TEST(TaskExecutorActorRunsQueuedTask) {
         auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
         runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
@@ -157,6 +164,7 @@ Y_UNIT_TEST_SUITE(Task) {
 
         int out = 0;
         sys.Enqueue(SetValue42(out));
+        UNIT_ASSERT_VALUES_EQUAL(out, 0); // must not run inline
 
         runtime->DispatchEvents();
 
@@ -185,6 +193,24 @@ Y_UNIT_TEST_SUITE(Task) {
         runtime->DispatchEvents();
         UNIT_ASSERT(out);
         UNIT_ASSERT_VALUES_EQUAL(*out, 43);
+    }
+
+    Y_UNIT_TEST(TaskWaitEventInExecutorActor) {
+        auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
+        runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
+        runtime->Initialize();
+
+        NActors::NTask::TTaskSystem sys;
+        sys.Initialize(runtime->GetAnyNodeActorSystem(), 1);
+
+        const auto responder = runtime->Register(new TPingResponderActor());
+
+        int out = 0;
+        sys.Enqueue(WaitWakeupInTaskExecutor(responder, out));
+        UNIT_ASSERT_VALUES_EQUAL(out, 0);
+
+        runtime->DispatchEvents();
+        UNIT_ASSERT_VALUES_EQUAL(out, 42);
     }
 
     Y_UNIT_TEST(ServiceMapSubSystemStoresByTemplateKeyValue) {
@@ -221,62 +247,6 @@ Y_UNIT_TEST_SUITE(Task) {
         UNIT_ASSERT_VALUES_EQUAL(subSystem->Find(actorId), 42);
         UNIT_ASSERT(subSystem->Erase(actorId));
         UNIT_ASSERT_VALUES_EQUAL(subSystem->Find(actorId), 0);
-    }
-
-    Y_UNIT_TEST(WhenAllTwoManualPromises) {
-        TManualPromise<int> p1;
-        TManualPromise<int> p2;
-        int out1 = 0;
-        int out2 = 0;
-
-        task<void> t = AwaitTwoAndStore(p1, p2, out1, out2);
-        t.resume(); // starts, waits on both promises
-        UNIT_ASSERT(!t.done());
-
-        std::coroutine_handle<> h1 = p1.SetValue(10);
-        std::coroutine_handle<> h2 = p2.SetValue(20);
-        UNIT_ASSERT(h1);
-        UNIT_ASSERT(h2);
-
-        h1.resume();
-        UNIT_ASSERT(!t.done()); // waiting for the second task
-
-        h2.resume();
-        UNIT_ASSERT(t.done());
-        UNIT_ASSERT_VALUES_EQUAL(out1, 10);
-        UNIT_ASSERT_VALUES_EQUAL(out2, 20);
-    }
-
-    Y_UNIT_TEST(WhenAllThreeManualPromises) {
-        TManualPromise<int> p1;
-        TManualPromise<int> p2;
-        TManualPromise<int> p3;
-        int out1 = 0;
-        int out2 = 0;
-        int out3 = 0;
-
-        task<void> t = AwaitThreeAndStore(p1, p2, p3, out1, out2, out3);
-        t.resume(); // starts, waits on all promises
-        UNIT_ASSERT(!t.done());
-
-        std::coroutine_handle<> h2 = p2.SetValue(20);
-        UNIT_ASSERT(h2);
-        h2.resume();
-        UNIT_ASSERT(!t.done());
-
-        std::coroutine_handle<> h1 = p1.SetValue(10);
-        UNIT_ASSERT(h1);
-        h1.resume();
-        UNIT_ASSERT(!t.done());
-
-        std::coroutine_handle<> h3 = p3.SetValue(30);
-        UNIT_ASSERT(h3);
-        h3.resume();
-        UNIT_ASSERT(t.done());
-
-        UNIT_ASSERT_VALUES_EQUAL(out1, 10);
-        UNIT_ASSERT_VALUES_EQUAL(out2, 20);
-        UNIT_ASSERT_VALUES_EQUAL(out3, 30);
     }
 
 }

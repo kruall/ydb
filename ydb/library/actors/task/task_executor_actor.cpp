@@ -18,17 +18,23 @@ namespace NActors::NTask {
             switch (ev->GetTypeRewrite()) {
                 HFunc(TTaskSystem::TEvRunTask, HandleRunTask);
                 HFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
+                default:
+                    HandleEvent(ev);
             }
         }
 
     private:
-        void HandleRunTask(TTaskSystem::TEvRunTask::TPtr& ev, const TActorContext&) {
+        void HandleRunTask(TTaskSystem::TEvRunTask::TPtr& ev, const TActorContext& ctx) {
             auto handle = ev->Get()->Handle;
-            System_->RunTask(handle);
+            System_->RunTask(handle, ctx.SelfID);
         }
 
         void HandlePoisonPill(TEvents::TEvPoisonPill::TPtr&, const TActorContext& ctx) {
             Die(ctx);
+        }
+
+        void HandleEvent(TAutoPtr<IEventHandle>& ev) {
+            Y_UNUSED(System_->HandleExecutorEvent(ActorContext().SelfID, ev));
         }
 
     private:
