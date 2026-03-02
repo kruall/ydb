@@ -17,6 +17,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
         TEnvironmentSetup::TSettings MakeEnvSettings() {
             return TEnvironmentSetup::TSettings{
+                .VDiskReplPausedAtStart = true,
                 .PrepareActorSystemSetup = [](ui32, NActors::TActorSystemSetup& setup) {
                     setup.AfterCreateCallbacks.emplace_back([](NActors::TActorSystem& actorSystem) {
                         actorSystem.RegisterSubSystem(std::make_unique<TBlobStorageGroupSharedStateSubSystem>());
