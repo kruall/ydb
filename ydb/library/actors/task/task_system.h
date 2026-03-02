@@ -133,9 +133,9 @@ namespace NActors::NTask {
             return false;
         }
 
-        struct TExecutor {
+        struct alignas(64) TExecutor {
             TActorId ActorId;
-            THashMap<ui64, TVector<NDetail::ITaskEventAwaiter*>> EventAwaiters;
+            alignas(64) THashMap<ui64, TVector<NDetail::ITaskEventAwaiter*>> EventAwaiters;
             ui64 NextMessageCookie = 1;
 
             explicit TExecutor(TActorId actorId)
