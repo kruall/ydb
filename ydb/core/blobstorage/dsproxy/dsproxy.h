@@ -184,6 +184,15 @@ struct TBlobStorageGroupSharedState {
     const ui32 GroupGeneration = 0;
     const bool IsLimitedKeyless = false;
     const bool IsReadyForGet = false;
+
+    // Complete context required to build TBlobStorageGroupGetParameters.
+    const TIntrusivePtr<TBlobStorageGroupInfo> GroupInfo = nullptr;
+    const TIntrusivePtr<TGroupQueues> GroupQueues = nullptr;
+    const TIntrusivePtr<TBlobStorageGroupProxyMon> Mon = nullptr;
+    const TIntrusivePtr<TStoragePoolCounters> StoragePoolCounters = nullptr;
+    const TNodeLayoutInfoPtr NodeLayout = nullptr;
+    const TAccelerationParams AccelerationParams = {};
+    const TDuration LongRequestThreshold = TDuration::Zero();
 };
 
 using TBlobStorageGroupSharedStatePtr = std::shared_ptr<const TBlobStorageGroupSharedState>;

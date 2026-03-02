@@ -94,12 +94,27 @@ namespace NKikimr {
     }
 
     void TBlobStorageGroupProxy::ReplaceSharedState(bool ready, ui64 connectionEpoch) {
-        const bool canServeGet = ready && Info && Sessions && !IsLimitedKeyless;
+        const TIntrusivePtr<TBlobStorageGroupInfo> groupInfo = Info;
+        const TIntrusivePtr<TGroupQueues> groupQueues = Sessions ? Sessions->GroupQueues : nullptr;
+        const TIntrusivePtr<TBlobStorageGroupProxyMon> mon = Mon;
+        const TIntrusivePtr<TStoragePoolCounters> storagePoolCounters = StoragePoolCounters;
+        const TNodeLayoutInfoPtr nodeLayout = TNodeLayoutInfoPtr(NodeLayoutInfo);
+        const TAccelerationParams accelerationParams = GetAccelerationParams();
+        const TDuration longRequestThreshold =
+            TDuration::MilliSeconds(Controls.LongRequestThresholdMs.Update(TActivationContext::Now()));
+        const bool canServeGet = ready && !IsLimitedKeyless && groupInfo && groupQueues && mon && storagePoolCounters;
         SharedState = std::make_shared<TBlobStorageGroupSharedState>(TBlobStorageGroupSharedState{
             .ConnectionEpoch = connectionEpoch,
-            .GroupGeneration = Info ? Info->GroupGeneration : 0,
+            .GroupGeneration = groupInfo ? groupInfo->GroupGeneration : 0,
             .IsLimitedKeyless = IsLimitedKeyless,
             .IsReadyForGet = canServeGet,
+            .GroupInfo = groupInfo,
+            .GroupQueues = groupQueues,
+            .Mon = mon,
+            .StoragePoolCounters = storagePoolCounters,
+            .NodeLayout = nodeLayout,
+            .AccelerationParams = accelerationParams,
+            .LongRequestThreshold = longRequestThreshold,
         });
         if (SharedStateRegistered) {
             PublishSharedStateUpdate();
@@ -138,6 +153,9 @@ namespace NKikimr {
     }
 
     void TBlobStorageGroupProxy::RegisterSharedState() {
+        if (!Mon) {
+            EnsureMonitoring(true);
+        }
         SharedStateRegistered = true;
         const ui64 nextEpoch = SharedState ? SharedState->ConnectionEpoch + 1 : 1;
         ReplaceSharedState(true, nextEpoch);
