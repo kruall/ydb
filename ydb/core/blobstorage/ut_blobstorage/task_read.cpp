@@ -1,4 +1,5 @@
 #include <ydb/core/blobstorage/dsproxy/task/read.h>
+#include <ydb/core/blobstorage/dsproxy/task/range.h>
 #include <ydb/core/blobstorage/ut_blobstorage/lib/common.h>
 #include <ydb/core/blobstorage/ut_blobstorage/lib/env.h>
 
@@ -73,8 +74,30 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 NKikimrBlobStorage::FastRead);
         }
 
+        std::unique_ptr<TEvBlobStorage::TEvRange> MakeRangeRequest(
+                ui64 tabletId,
+                const TLogoBlobID& from,
+                const TLogoBlobID& to,
+                bool mustRestoreFirst = false,
+                bool isIndexOnly = true) {
+            return std::make_unique<TEvBlobStorage::TEvRange>(
+                tabletId,
+                from,
+                to,
+                mustRestoreFirst,
+                TInstant::Max(),
+                isIndexOnly);
+        }
+
         task<void> RunReadTaskAndSendTo(const NActors::TActorId& target, TReadTaskArgs args) {
             auto result = co_await RunReadTask(std::move(args));
+            UNIT_ASSERT(result);
+            NActors::TActivationContext::AsActorContext().Send(target, result.release());
+            co_return;
+        }
+
+        task<void> RunReadRangeTaskAndSendTo(const NActors::TActorId& target, TReadRangeTaskArgs args) {
+            auto result = co_await RunReadRangeTask(std::move(args));
             UNIT_ASSERT(result);
             NActors::TActivationContext::AsActorContext().Send(target, result.release());
             co_return;
@@ -87,6 +110,18 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 TReadTaskArgs args) {
             subSystem->Erase(groupId);
             auto result = co_await RunReadTask(std::move(args));
+            UNIT_ASSERT(result);
+            NActors::TActivationContext::AsActorContext().Send(target, result.release());
+            co_return;
+        }
+
+        task<void> EraseStateAndRunReadRangeTaskAndSendTo(
+                const NActors::TActorId& target,
+                TBlobStorageGroupSharedStateSubSystem* subSystem,
+                ui32 groupId,
+                TReadRangeTaskArgs args) {
+            subSystem->Erase(groupId);
+            auto result = co_await RunReadRangeTask(std::move(args));
             UNIT_ASSERT(result);
             NActors::TActivationContext::AsActorContext().Send(target, result.release());
             co_return;
@@ -117,6 +152,46 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             }
 
             ~TProxyGetEventCounterGuard() {
+                Env_.Runtime->FilterFunction = std::move(PrevFilter_);
+            }
+
+            ui32 GetCount() const {
+                return Count_;
+            }
+
+        private:
+            TEnvironmentSetup& Env_;
+            std::function<bool(ui32, std::unique_ptr<IEventHandle>&)> PrevFilter_;
+            NActors::TActorId ProxyServiceId_;
+            NActors::TActorId ProxyActorId_;
+            ui32 Count_ = 0;
+        };
+
+        class TProxyRangeEventCounterGuard {
+        public:
+            TProxyRangeEventCounterGuard(TEnvironmentSetup& env, ui32 groupId)
+                : Env_(env)
+                , PrevFilter_(std::move(env.Runtime->FilterFunction))
+                , ProxyServiceId_(MakeBlobStorageProxyID(groupId))
+                , ProxyActorId_(GetActorSystem(env).LookupLocalService(ProxyServiceId_))
+            {
+                Env_.Runtime->FilterFunction = [this](ui32, std::unique_ptr<IEventHandle>& ev) {
+                    if (ev && ev->GetTypeRewrite() == TEvBlobStorage::EvRange) {
+                        const NActors::TActorId& recipient = ev->Recipient;
+                        const NActors::TActorId& recipientRewrite = ev->GetRecipientRewrite();
+                        if (recipient == ProxyServiceId_
+                            || recipientRewrite == ProxyServiceId_
+                            || recipient == ProxyActorId_
+                            || recipientRewrite == ProxyActorId_)
+                        {
+                            ++Count_;
+                        }
+                    }
+                    return true;
+                };
+            }
+
+            ~TProxyRangeEventCounterGuard() {
                 Env_.Runtime->FilterFunction = std::move(PrevFilter_);
             }
 
@@ -217,5 +292,83 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
         }
 
     } // Y_UNIT_TEST_SUITE(TaskRead)
+
+    Y_UNIT_TEST_SUITE(TaskRange) {
+
+        Y_UNIT_TEST(UsesRealProxyPathWhenSharedStateReady) {
+            TEnvironmentSetup env(MakeEnvSettings());
+            TTestInfo test = InitTest(env);
+
+            const ui32 groupId = test.Info->GroupID.GetRawId();
+            const TLogoBlobID blobId(1, 1, 3, 0, 64, 0);
+            const TString data = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+            env.PutBlob(groupId, blobId, data);
+
+            WaitForSharedStateReady(env, groupId);
+
+            auto& taskSystem = GetTaskSystem(env);
+            const NActors::TActorId edge = test.Runtime->AllocateEdgeActor(1);
+
+            TProxyRangeEventCounterGuard proxyRangeCounter(env, groupId);
+            taskSystem.Enqueue(RunReadRangeTaskAndSendTo(edge, TReadRangeTaskArgs{
+                .GroupId = groupId,
+                .Request = {
+                    .Event = MakeRangeRequest(blobId.TabletID(), blobId, blobId, false, true),
+                }
+            }));
+
+            auto ev = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge);
+            UNIT_ASSERT(ev);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Id, blobId.FullID());
+            UNIT_ASSERT(proxyRangeCounter.GetCount() > 0);
+        }
+
+        Y_UNIT_TEST(FallsBackToRealProxyWhenSharedStateMissing) {
+            TEnvironmentSetup env(MakeEnvSettings());
+            TTestInfo test = InitTest(env);
+
+            const ui32 groupId = test.Info->GroupID.GetRawId();
+            const TLogoBlobID blobId(1, 1, 4, 0, 16, 0);
+            const TString data = "0123456789ABCDEF";
+            env.PutBlob(groupId, blobId, data);
+
+            WaitForSharedStateReady(env, groupId);
+            auto& subSystem = GetSharedStateSubSystem(env);
+
+            auto& taskSystem = GetTaskSystem(env);
+            const NActors::TActorId edge = test.Runtime->AllocateEdgeActor(1);
+            TProxyRangeEventCounterGuard proxyRangeCounter(env, groupId);
+            taskSystem.Enqueue(EraseStateAndRunReadRangeTaskAndSendTo(edge, &subSystem, groupId, TReadRangeTaskArgs{
+                .GroupId = groupId,
+                .Request = {
+                    .Event = MakeRangeRequest(blobId.TabletID(), blobId, blobId, false, true),
+                }
+            }));
+
+            auto ev = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge);
+            UNIT_ASSERT(ev);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
+            UNIT_ASSERT(proxyRangeCounter.GetCount() > 0);
+        }
+
+        Y_UNIT_TEST(ReturnsErrorForMissingRangeRequestEvent) {
+            TEnvironmentSetup env(MakeEnvSettings());
+            auto& taskSystem = GetTaskSystem(env);
+
+            const NActors::TActorId edge = env.Runtime->AllocateEdgeActor(1);
+            taskSystem.Enqueue(RunReadRangeTaskAndSendTo(edge, TReadRangeTaskArgs{
+                .GroupId = 0,
+            }));
+
+            auto ev = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge);
+            UNIT_ASSERT(ev);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::ERROR);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 0u);
+        }
+
+    } // Y_UNIT_TEST_SUITE(TaskRange)
 
 } // namespace NKikimr::NBlobStorage::NDSProxy::NTask

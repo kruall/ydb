@@ -1,6 +1,8 @@
 LIBRARY()
 
 SRCS(
+    range.h
+    range.cpp
     read.h
     read.cpp
 )

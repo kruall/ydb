@@ -9,6 +9,7 @@ PEERDIR(
 )
 
 SRCS(
+    range_ut.cpp
     read_ut.cpp
 )
 
