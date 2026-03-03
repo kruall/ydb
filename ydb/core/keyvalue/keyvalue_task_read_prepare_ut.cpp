@@ -35,7 +35,13 @@ TReadSharedSnapshotPtr MakeSnapshot(const TVector<std::pair<TString, TString>>& 
 }
 
 TReadSharedSnapshotPtr MakeSnapshotWithNonInlineValue(const TString& key, ui32 blobSize) {
-    auto snapshot = MakeSnapshot({});
+    auto snapshot = std::make_shared<TReadSharedSnapshot>();
+    snapshot->IsActual.store(true, std::memory_order_release);
+    snapshot->Epoch = 1;
+    snapshot->TabletId = 42;
+    snapshot->UserGeneration = 7;
+    snapshot->ChannelGeneration = 11;
+    snapshot->ChannelStep = 13;
 
     TReadIndexRecordSnapshot record;
     TReadChainItemSnapshot item;
