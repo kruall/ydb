@@ -62,7 +62,10 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
         struct TFakeQueueState {
             NKikimrProto::EReplyStatus Status = NKikimrProto::OK;
             ui32 Requests = 0;
+            ui32 RangeRequests = 0;
+            ui32 GetRequests = 0;
             TLogoBlobID BlobId = TLogoBlobID(1, 1, 1, 0, 16, 0);
+            TString Payload = "queue-full-read!";
         };
 
         class TFakeQueueActor final : public NActors::TActor<TFakeQueueActor> {
@@ -82,6 +85,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
         private:
             void HandleVGet(TEvBlobStorage::TEvVGet::TPtr& ev) {
                 ++State_.Requests;
+                const auto& request = ev->Get()->Record;
                 UNIT_ASSERT(ev->Get()->Record.HasVDiskID());
                 const TVDiskID vdiskId = VDiskIDFromVDiskID(ev->Get()->Record.GetVDiskID());
 
@@ -99,7 +103,38 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                     ui64(0));
 
                 if (State_.Status == NKikimrProto::OK) {
-                    result->AddResult(NKikimrProto::OK, State_.BlobId.FullID());
+                    if (request.HasRangeQuery()) {
+                        ++State_.RangeRequests;
+                        result->AddResult(NKikimrProto::OK, State_.BlobId.FullID());
+                    } else {
+                        UNIT_ASSERT(request.ExtremeQueriesSize() > 0);
+                        ++State_.GetRequests;
+                        for (const auto& query : request.GetExtremeQueries()) {
+                            UNIT_ASSERT(query.HasId());
+                            const auto id = LogoBlobIDFromLogoBlobID(query.GetId());
+                            const ui64 shift = query.HasShift() ? query.GetShift() : 0;
+                            const ui32 size = query.HasSize() ? query.GetSize() : id.BlobSize();
+
+                            ui64 queryCookie = 0;
+                            const ui64* cookiePtr = nullptr;
+                            if (query.HasCookie()) {
+                                queryCookie = query.GetCookie();
+                                cookiePtr = &queryCookie;
+                            }
+
+                            TString data = State_.Payload;
+                            if (data.empty()) {
+                                data = "q";
+                            }
+                            if (data.size() < size) {
+                                data.append(size - data.size(), 'q');
+                            } else if (data.size() > size) {
+                                data.resize(size);
+                            }
+
+                            result->AddResult(NKikimrProto::OK, id, shift, TRope(std::move(data)), cookiePtr);
+                        }
+                    }
                 }
 
                 Send(ev->Sender, result.release(), 0, ev->Cookie);
@@ -109,7 +144,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             TFakeQueueState& State_;
         };
 
-        std::unique_ptr<TEvBlobStorage::TEvRange> MakeRangeRequest() {
+        std::unique_ptr<TEvBlobStorage::TEvRange> MakeRangeRequest(bool isIndexOnly = true) {
             const TLogoBlobID from(1, 1, 1, 0, 16, 0);
             const TLogoBlobID to(1, 1, 1, 0, 16, 0);
             return std::make_unique<TEvBlobStorage::TEvRange>(
@@ -118,7 +153,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 to,
                 false,
                 TInstant::Max(),
-                true);
+                isIndexOnly);
         }
 
         task<void> RunReadRangeTaskAndSendTo(const NActors::TActorId& target, TReadRangeTaskArgs args) {
@@ -289,6 +324,58 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Id, queueState.BlobId.FullID());
             UNIT_ASSERT_VALUES_EQUAL(queueState.Requests, 1u);
+            UNIT_ASSERT_VALUES_EQUAL(queueState.RangeRequests, 1u);
+            UNIT_ASSERT_VALUES_EQUAL(queueState.GetRequests, 0u);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Buffer.size(), 0u);
+            UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 0u);
+        }
+
+        Y_UNIT_TEST(UsesQueueHotPathForFullReadWhenSharedStateReady) {
+            TTestActorSystem runtime(1);
+            StartRuntimeWithSharedStateSubsystem(runtime);
+
+            auto* actorSystem = runtime.GetNode(1)->ActorSystem.get();
+            UNIT_ASSERT(actorSystem);
+
+            NActors::NTask::TTaskSystem taskSystem;
+            taskSystem.Initialize(actorSystem, 1);
+
+            constexpr ui32 groupId = 17;
+            TFakeQueueState queueState{
+                .Status = NKikimrProto::OK,
+                .Payload = "queue-full-read!",
+            };
+            const NActors::TActorId queueActorId = runtime.Register(new TFakeQueueActor(queueState), 1);
+
+            auto* sharedStateSubSystem = actorSystem->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>();
+            UNIT_ASSERT(sharedStateSubSystem);
+            sharedStateSubSystem->Update(groupId, MakeReadySharedState(runtime, queueActorId));
+
+            TFakeRangeProxyState proxyState{
+                .Status = NKikimrProto::OK,
+                .GroupId = groupId,
+                .ReturnResponse = true,
+            };
+            const NActors::TActorId proxyActorId = runtime.Register(new TFakeRangeProxyActor(proxyState), 1);
+            runtime.RegisterService(MakeBlobStorageProxyID(proxyState.GroupId), proxyActorId);
+            const NActors::TActorId edgeId = runtime.AllocateEdgeActor(1);
+
+            taskSystem.Enqueue(RunReadRangeTaskAndSendTo(edgeId, TReadRangeTaskArgs{
+                .GroupId = groupId,
+                .Request = {
+                    .Event = MakeRangeRequest(false),
+                }
+            }));
+
+            auto ev = runtime.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edgeId);
+            UNIT_ASSERT(ev);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Id, queueState.BlobId.FullID());
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Buffer, queueState.Payload);
+            UNIT_ASSERT_VALUES_EQUAL(queueState.Requests, 2u);
+            UNIT_ASSERT_VALUES_EQUAL(queueState.RangeRequests, 1u);
+            UNIT_ASSERT_VALUES_EQUAL(queueState.GetRequests, 1u);
             UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 0u);
         }
 

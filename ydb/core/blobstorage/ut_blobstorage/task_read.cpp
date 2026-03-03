@@ -325,6 +325,39 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(proxyRangeCounter.GetCount(), 0u);
         }
 
+        Y_UNIT_TEST(UsesRealQueueHotPathForFullReadWhenSharedStateReady) {
+            TEnvironmentSetup env(MakeEnvSettings());
+            TTestInfo test = InitTest(env);
+
+            const ui32 groupId = test.Info->GroupID.GetRawId();
+            const TLogoBlobID blobId(1, 1, 8, 0, 64, 0);
+            const TString data = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+            env.PutBlob(groupId, blobId, data);
+
+            WaitForSharedStateReady(env, groupId);
+
+            auto& taskSystem = GetTaskSystem(env);
+            const NActors::TActorId edge = test.Runtime->AllocateEdgeActor(1);
+
+            TProxyRangeEventCounterGuard proxyRangeCounter(env, groupId);
+            TProxyGetEventCounterGuard proxyGetCounter(env, groupId);
+            taskSystem.Enqueue(RunReadRangeTaskAndSendTo(edge, TReadRangeTaskArgs{
+                .GroupId = groupId,
+                .Request = {
+                    .Event = MakeRangeRequest(blobId.TabletID(), blobId, blobId, false, false),
+                }
+            }));
+
+            auto ev = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge);
+            UNIT_ASSERT(ev);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Id, blobId.FullID());
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Buffer, data);
+            UNIT_ASSERT_VALUES_EQUAL(proxyRangeCounter.GetCount(), 0u);
+            UNIT_ASSERT_VALUES_EQUAL(proxyGetCounter.GetCount(), 0u);
+        }
+
         Y_UNIT_TEST(FallsBackToRealProxyWhenSharedStateMissing) {
             TEnvironmentSetup env(MakeEnvSettings());
             TTestInfo test = InitTest(env);
