@@ -295,7 +295,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
 
     Y_UNIT_TEST_SUITE(TaskRange) {
 
-        Y_UNIT_TEST(UsesRealProxyPathWhenSharedStateReady) {
+        Y_UNIT_TEST(UsesRealQueueHotPathWhenSharedStateReady) {
             TEnvironmentSetup env(MakeEnvSettings());
             TTestInfo test = InitTest(env);
 
@@ -322,7 +322,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Id, blobId.FullID());
-            UNIT_ASSERT(proxyRangeCounter.GetCount() > 0);
+            UNIT_ASSERT_VALUES_EQUAL(proxyRangeCounter.GetCount(), 0u);
         }
 
         Y_UNIT_TEST(FallsBackToRealProxyWhenSharedStateMissing) {

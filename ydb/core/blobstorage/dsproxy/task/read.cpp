@@ -101,6 +101,36 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             }
         }
 
+        void SendVPuts(const TBlobStorageGroupSharedState& sharedState, NActors::NTask::TTaskSystem::TEventQueue& queue,
+                TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>>& vPuts, const NWilson::TTraceId& traceId) {
+            auto& topology = sharedState.GroupInfo->GetTopology();
+            const TActorId sender = NActors::TActivationContext::AsActorContext().SelfID;
+            const ui64 cookie = queue.Cookie();
+
+            while (!vPuts.empty()) {
+                std::unique_ptr<TEvBlobStorage::TEvVPut> ev = std::move(vPuts.front());
+                vPuts.pop_front();
+                Y_ABORT_UNLESS(ev, "empty VPut request in queue");
+                Y_ABORT_UNLESS(ev->Record.HasVDiskID());
+                const TVDiskID vdiskId = VDiskIDFromVDiskID(ev->Record.GetVDiskID());
+                const auto queueId = TGroupQueues::TVDisk::TQueues::VDiskQueueId(*ev);
+                auto& queues = sharedState.GroupQueues
+                    ->FailDomains[topology.GetFailDomainOrderNumber(vdiskId)]
+                    .VDisks[vdiskId.VDisk]
+                    .Queues;
+
+                const TActorId queueActorId = queues.GetQueue(queueId).ActorId;
+                NActors::TActivationContext::Send(new IEventHandle(
+                    queueActorId,
+                    sender,
+                    ev.release(),
+                    0,
+                    cookie,
+                    nullptr,
+                    NWilson::TTraceId(traceId)));
+            }
+        }
+
     } // namespace
 
     NActors::NTask::task<TReadTaskResult> RunReadTask(TReadTaskArgs args) {
@@ -142,39 +172,42 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
 
         getImpl.GenerateInitialRequests(logCtx, vGets);
-        if (!vPuts.empty()) {
-            auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
-            co_return MakeErrorResultFromRequest(*request, args, NKikimrProto::ERROR, "VPut is not supported in task read yet");
-        }
         SendVGets(resolvedSharedState, queue, vGets, args.Request.TraceId);
+        SendVPuts(resolvedSharedState, queue, vPuts, args.Request.TraceId);
 
         for (;;) {
-            auto ev = co_await NActors::NTask::WaitEvent<TEvBlobStorage::TEvVGetResult>(queue);
+            auto ev = co_await NActors::NTask::WaitEvent<IEventHandle>(queue);
             Y_ABORT_UNLESS(ev);
-            const auto& record = ev->Get()->Record;
-            Y_ABORT_UNLESS(record.HasStatus());
-
-            const NKikimrProto::EReplyStatus status = record.GetStatus();
-            if (status == NKikimrProto::RACE || status == NKikimrProto::NOTREADY) {
-                const ui32 restartCounter = status == NKikimrProto::RACE
-                    ? args.Request.RestartCounter + 1
-                    : args.Request.RestartCounter;
-                auto request = BuildRestartRequest(getImpl, args, restartCounter);
-                co_return co_await ForwardGetToProxy(args, std::move(request), "fallback requested for terminal VGet status");
-            }
-            if (status == NKikimrProto::BLOCKED || status == NKikimrProto::DEADLINE) {
-                auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
-                co_return MakeErrorResultFromRequest(*request, args, status, "terminal status from VGetResult");
-            }
-
             TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
-            getImpl.OnVGetResult(logCtx, *ev->Get(), vGets, vPuts, getResult);
+            if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVGetResult::EventType) {
+                TEvBlobStorage::TEvVGetResult::TPtr vGetEv(static_cast<TEvBlobStorage::TEvVGetResult*>(ev->ReleaseBase().Release()), ev->ReleaseType());
+                Y_ABORT_UNLESS(vGetEv);
+                const auto& record = vGetEv->Get()->Record;
+                Y_ABORT_UNLESS(record.HasStatus());
 
-            if (!vPuts.empty()) {
-                auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
-                co_return MakeErrorResultFromRequest(*request, args, NKikimrProto::ERROR, "VPut is not supported in task read yet");
+                const NKikimrProto::EReplyStatus status = record.GetStatus();
+                if (status == NKikimrProto::RACE || status == NKikimrProto::NOTREADY) {
+                    const ui32 restartCounter = status == NKikimrProto::RACE
+                        ? args.Request.RestartCounter + 1
+                        : args.Request.RestartCounter;
+                    auto request = BuildRestartRequest(getImpl, args, restartCounter);
+                    co_return co_await ForwardGetToProxy(args, std::move(request), "fallback requested for terminal VGet status");
+                }
+                if (status == NKikimrProto::BLOCKED || status == NKikimrProto::DEADLINE) {
+                    auto request = BuildRestartRequest(getImpl, args, args.Request.RestartCounter);
+                    co_return MakeErrorResultFromRequest(*request, args, status, "terminal status from VGetResult");
+                }
+
+                getImpl.OnVGetResult(logCtx, *vGetEv->Get(), vGets, vPuts, getResult);
+            } else if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVPutResult::EventType) {
+                TEvBlobStorage::TEvVPutResult::TPtr vPutEv(static_cast<TEvBlobStorage::TEvVPutResult*>(ev->ReleaseBase().Release()), ev->ReleaseType());
+                Y_ABORT_UNLESS(vPutEv);
+                getImpl.OnVPutResult(logCtx, *vPutEv->Get(), vGets, vPuts, getResult);
+            } else {
+                Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
             }
             SendVGets(resolvedSharedState, queue, vGets, args.Request.TraceId);
+            SendVPuts(resolvedSharedState, queue, vPuts, args.Request.TraceId);
 
             if (getResult) {
                 TReadTaskResult result(getResult.Release());

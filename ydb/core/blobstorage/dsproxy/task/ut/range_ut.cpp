@@ -1,6 +1,7 @@
 #include <ydb/core/blobstorage/dsproxy/task/range.h>
 
 #include <ydb/core/util/actorsys_test/testactorsys.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/task/task_system.h>
 
@@ -58,6 +59,56 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             TFakeRangeProxyState& State_;
         };
 
+        struct TFakeQueueState {
+            NKikimrProto::EReplyStatus Status = NKikimrProto::OK;
+            ui32 Requests = 0;
+            TLogoBlobID BlobId = TLogoBlobID(1, 1, 1, 0, 16, 0);
+        };
+
+        class TFakeQueueActor final : public NActors::TActor<TFakeQueueActor> {
+        public:
+            explicit TFakeQueueActor(TFakeQueueState& state)
+                : TActor(&TThis::StateWork)
+                , State_(state)
+            {
+            }
+
+            STFUNC(StateWork) {
+                switch (ev->GetTypeRewrite()) {
+                    hFunc(TEvBlobStorage::TEvVGet, HandleVGet);
+                }
+            }
+
+        private:
+            void HandleVGet(TEvBlobStorage::TEvVGet::TPtr& ev) {
+                ++State_.Requests;
+                UNIT_ASSERT(ev->Get()->Record.HasVDiskID());
+                const TVDiskID vdiskId = VDiskIDFromVDiskID(ev->Get()->Record.GetVDiskID());
+
+                auto result = std::make_unique<TEvBlobStorage::TEvVGetResult>(
+                    State_.Status,
+                    vdiskId,
+                    TAppData::TimeProvider->Now(),
+                    ui32(0),
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    TMaybe<ui64>(),
+                    ui32(0),
+                    ui64(0));
+
+                if (State_.Status == NKikimrProto::OK) {
+                    result->AddResult(NKikimrProto::OK, State_.BlobId.FullID());
+                }
+
+                Send(ev->Sender, result.release(), 0, ev->Cookie);
+            }
+
+        private:
+            TFakeQueueState& State_;
+        };
+
         std::unique_ptr<TEvBlobStorage::TEvRange> MakeRangeRequest() {
             const TLogoBlobID from(1, 1, 1, 0, 16, 0);
             const TLogoBlobID to(1, 1, 1, 0, 16, 0);
@@ -85,7 +136,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             runtime.StartNode(1);
         }
 
-        TBlobStorageGroupSharedStatePtr MakeReadySharedState(TTestActorSystem& runtime) {
+        TBlobStorageGroupSharedStatePtr MakeReadySharedState(TTestActorSystem& runtime, const TActorId& queueActorId) {
             TVector<TActorId> vdisks = {runtime.AllocateEdgeActor(1)};
             auto groupInfo = MakeIntrusive<TBlobStorageGroupInfo>(
                 TBlobStorageGroupType::ErasureNone,
@@ -94,6 +145,19 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                 ui32(1),
                 &vdisks);
             auto groupQueues = MakeIntrusive<TGroupQueues>(groupInfo->GetTopology());
+
+            for (auto& failDomain : groupQueues->FailDomains) {
+                for (auto& vdisk : failDomain.VDisks) {
+                    auto& queues = vdisk.Queues;
+                    queues.PutTabletLog.ActorId = queueActorId;
+                    queues.PutAsyncBlob.ActorId = queueActorId;
+                    queues.PutUserData.ActorId = queueActorId;
+                    queues.GetAsyncRead.ActorId = queueActorId;
+                    queues.GetFastRead.ActorId = queueActorId;
+                    queues.GetDiscover.ActorId = queueActorId;
+                    queues.GetLowRead.ActorId = queueActorId;
+                }
+            }
 
             return std::make_shared<TBlobStorageGroupSharedState>(TBlobStorageGroupSharedState{
                 .ConnectionEpoch = 1,
@@ -185,7 +249,7 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 0u);
         }
 
-        Y_UNIT_TEST(ForwardsToProxyWhenSharedStateReady) {
+        Y_UNIT_TEST(UsesQueueHotPathWhenSharedStateReady) {
             TTestActorSystem runtime(1);
             StartRuntimeWithSharedStateSubsystem(runtime);
 
@@ -196,9 +260,12 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             taskSystem.Initialize(actorSystem, 1);
 
             constexpr ui32 groupId = 9;
+            TFakeQueueState queueState;
+            const NActors::TActorId queueActorId = runtime.Register(new TFakeQueueActor(queueState), 1);
+
             auto* sharedStateSubSystem = actorSystem->GetSubSystem<TBlobStorageGroupSharedStateSubSystem>();
             UNIT_ASSERT(sharedStateSubSystem);
-            sharedStateSubSystem->Update(groupId, MakeReadySharedState(runtime));
+            sharedStateSubSystem->Update(groupId, MakeReadySharedState(runtime, queueActorId));
 
             TFakeRangeProxyState proxyState{
                 .Status = NKikimrProto::OK,
@@ -220,7 +287,9 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             UNIT_ASSERT(ev);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Status, NKikimrProto::OK);
             UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses.size(), 1u);
-            UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 1u);
+            UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Responses[0].Id, queueState.BlobId.FullID());
+            UNIT_ASSERT_VALUES_EQUAL(queueState.Requests, 1u);
+            UNIT_ASSERT_VALUES_EQUAL(proxyState.Requests, 0u);
         }
 
     } // Y_UNIT_TEST_SUITE(ReadRangeTask)
