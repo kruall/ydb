@@ -65,6 +65,7 @@ TIntermediate::TIntermediate(TActorId respondTo, TActorId keyValueActorId, ui64 
         TRequestType::EType requestType, NWilson::TTraceId traceId)
     : Cookie(0)
     , Generation(0)
+    , RequestUid(0)
     , Deadline(TInstant::Max())
     , HasCookie(false)
     , HasGeneration(false)

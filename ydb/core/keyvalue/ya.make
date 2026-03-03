@@ -37,6 +37,8 @@ SRCS(
     keyvalue_storage_request.h
     keyvalue_stored_state_data.cpp
     keyvalue_stored_state_data.h
+    keyvalue_task_read_prepare.cpp
+    keyvalue_task_read_prepare.h
     keyvalue_trash_key_arbitrary.h
     keyvalue_utils.cpp
     keyvalue_utils.h
@@ -45,6 +47,7 @@ SRCS(
 PEERDIR(
     ydb/library/actors/core
     ydb/library/actors/protos
+    ydb/library/actors/task
     ydb/core/base
     ydb/core/blobstorage/base
     ydb/core/engine/minikql
