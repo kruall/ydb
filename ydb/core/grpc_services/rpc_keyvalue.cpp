@@ -1,4 +1,5 @@
 #include "service_keyvalue.h"
+#include "rpc_keyvalue_resolve_state.h"
 
 #include <ydb/public/api/protos/ydb_keyvalue.pb.h>
 
@@ -92,6 +93,7 @@ using namespace Ydb;
 namespace {
 
 constexpr bool UsePayloadForExecuteTransactionWrite = false;
+constexpr TDuration KeyValueResolveCacheTtl = TDuration::Seconds(5);
 
 void AppendVarint(TString& out, ui64 value) {
     while (value >= 0x80) {
@@ -1081,7 +1083,9 @@ public:
         if constexpr (IsOperational) {
             TBase::Bootstrap(ctx);
         }
-        this->OnBootstrap();
+        if (!TryResolveFromSharedStateExt()) {
+            this->OnBootstrap();
+        }
         this->Become(&TKeyValueRequestGrpc::StateFunc);
     }
 
@@ -1136,6 +1140,7 @@ protected:
             return;
         }
 
+        OnResolvedFromNavigateExt(request->ResultSet[0], desc);
         CreatePipe();
         SendRequest();
     }
@@ -1266,6 +1271,34 @@ protected:
         }
     }
 
+private:
+    template <class T = TDerived>
+    bool TryResolveFromSharedStateExt() {
+        if constexpr (requires(T& derived) { derived.TryResolveFromSharedState(); }) {
+            return static_cast<T*>(this)->TryResolveFromSharedState();
+        } else {
+            return false;
+        }
+    }
+
+    template <class T = TDerived>
+    void OnResolvedFromNavigateExt(
+            const NSchemeCache::TSchemeCacheNavigate::TEntry& entry,
+            const NKikimrSchemeOp::TSolomonVolumeDescription& desc)
+    {
+        if constexpr (requires(T& derived,
+                               const NSchemeCache::TSchemeCacheNavigate::TEntry& e,
+                               const NKikimrSchemeOp::TSolomonVolumeDescription& d)
+        {
+            derived.OnResolvedFromNavigate(e, d);
+        }) {
+            static_cast<T*>(this)->OnResolvedFromNavigate(entry, desc);
+        } else {
+            Y_UNUSED(entry);
+            Y_UNUSED(desc);
+        }
+    }
+
 protected:
     ui64 KVTabletId = 0;
     TActorId KVPipeClient;
@@ -1355,6 +1388,69 @@ public:
     bool ValidateRequest(Ydb::StatusIds::StatusCode& /*status*/) {
         return true;
     }
+
+    bool TryResolveFromSharedState() {
+        auto* subSystem = TActivationContext::ActorSystem()->GetSubSystem<TKeyValueResolveSubSystem>();
+        if (!subSystem) {
+            return false;
+        }
+
+        const auto& request = *this->GetProtoRequest();
+        TKeyValueResolveKey key;
+        key.Database = this->GetDatabaseName();
+        key.Path = request.path();
+
+        auto cached = subSystem->Find(key);
+        if (!cached) {
+            return false;
+        }
+        if (cached->ExpireAt <= TActivationContext::Monotonic()) {
+            return false;
+        }
+
+        const auto partitionIt = cached->PartitionToTabletId.find(request.partition_id());
+        if (partitionIt == cached->PartitionToTabletId.end() || !partitionIt->second) {
+            return false;
+        }
+
+        if (const auto token = this->GetToken()) {
+            if (cached->SecurityObject && !cached->SecurityObject->CheckAccess(GetRequiredAccessRights(), *token)) {
+                return false;
+            }
+        }
+
+        this->KVTabletId = partitionIt->second;
+        this->CreatePipe();
+        this->SendRequest();
+        return true;
+    }
+
+    void OnResolvedFromNavigate(
+            const NSchemeCache::TSchemeCacheNavigate::TEntry& entry,
+            const NKikimrSchemeOp::TSolomonVolumeDescription& desc)
+    {
+        auto* subSystem = TActivationContext::ActorSystem()->GetSubSystem<TKeyValueResolveSubSystem>();
+        if (!subSystem) {
+            return;
+        }
+
+        const auto& request = *this->GetProtoRequest();
+        TKeyValueResolveKey key;
+        key.Database = this->GetDatabaseName();
+        key.Path = request.path();
+
+        auto value = std::make_shared<TKeyValueResolveValue>();
+        value->CanonizedPath = CanonizePath(entry.Path);
+        value->SecurityObject = entry.SecurityObject;
+        value->ExpireAt = TActivationContext::Monotonic() + KeyValueResolveCacheTtl;
+        value->PartitionToTabletId.reserve(desc.PartitionsSize());
+        for (const auto& partition : desc.GetPartitions()) {
+            value->PartitionToTabletId[partition.GetPartitionId()] = partition.GetTabletId();
+        }
+
+        subSystem->Update(key, value);
+    }
+
     NACLib::EAccessRights GetRequiredAccessRights() const {
         return NACLib::SelectRow;
     }

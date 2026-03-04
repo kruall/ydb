@@ -39,6 +39,7 @@
 #include <ydb/core/formats/clickhouse_block.h>
 #include <ydb/core/grpc_services/grpc_request_proxy.h>
 #include <ydb/core/grpc_services/grpc_mon.h>
+#include <ydb/core/grpc_services/rpc_keyvalue_resolve_state.h>
 #include <ydb/core/log_backend/log_backend.h>
 #include <ydb/core/mon/mon.h>
 #include <ydb/core/mon/crossref.h>
@@ -1754,6 +1755,7 @@ void TKikimrRunner::InitializeActorSystem(
     setup->AfterCreateCallbacks.emplace_back([](TActorSystem& actorSystem) {
         actorSystem.RegisterSubSystem(std::make_unique<TBlobStorageGroupSharedStateSubSystem>());
         actorSystem.RegisterSubSystem(std::make_unique<NKeyValue::NTask::TReadSharedSnapshotSubSystem>());
+        actorSystem.RegisterSubSystem(std::make_unique<NGRpcService::TKeyValueResolveSubSystem>());
     });
 
     ActorSystem.Reset(new TActorSystem(setup, AppData.Get(), LogSettings));
