@@ -135,6 +135,7 @@ PEERDIR(
     ydb/core/health_check
     ydb/core/io_formats/ydb_dump
     ydb/core/kesus/tablet
+    ydb/core/keyvalue
     ydb/core/kqp/common
     ydb/core/kqp/opt
     ydb/core/protos

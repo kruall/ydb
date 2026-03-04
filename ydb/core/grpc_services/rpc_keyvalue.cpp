@@ -8,10 +8,12 @@
 #include <ydb/core/grpc_services/rpc_common/rpc_common.h>
 #include <ydb/core/grpc_services/rpc_request_base.h>
 #include <ydb/core/keyvalue/keyvalue_events.h>
+#include <ydb/core/keyvalue/keyvalue_task_read.h>
 #include <ydb/core/protos/schemeshard/operations.pb.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/mind/local.h>
 #include <ydb/core/protos/local.pb.h>
+#include <ydb/library/actors/task/task_system.h>
 
 
 namespace NKikimr::NGRpcService {
@@ -92,8 +94,86 @@ using namespace Ydb;
 
 namespace {
 
+void CopyProtobuf(const Ydb::KeyValue::ReadRequest &from, NKikimrKeyValue::ReadRequest *to);
+void CopyReadResultFromEvent(const TEvKeyValue::TEvReadResponse& from, Ydb::KeyValue::ReadResult* to);
+
 constexpr bool UsePayloadForExecuteTransactionWrite = false;
 constexpr TDuration KeyValueResolveCacheTtl = TDuration::Seconds(5);
+
+namespace NPrivate {
+
+enum EEv {
+    EvReadTaskDone = EventSpaceBegin(TEvents::ES_PRIVATE),
+    EvEnd
+};
+
+static_assert(EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE));
+
+struct TEvReadTaskDone : public TEventLocal<TEvReadTaskDone, EvReadTaskDone> {
+    std::unique_ptr<TEvKeyValue::TEvReadResponse> Response;
+    bool NeedFallback = true;
+
+    TEvReadTaskDone(std::unique_ptr<TEvKeyValue::TEvReadResponse>&& response, bool needFallback)
+        : Response(std::move(response))
+        , NeedFallback(needFallback)
+    {
+    }
+};
+
+struct TReadV2TaskArgs {
+    TString Database;
+    TString Path;
+    ui64 PartitionId = 0;
+    TIntrusiveConstPtr<NACLib::TUserToken> UserToken;
+    NKikimrKeyValue::ReadRequest Request;
+    NWilson::TTraceId TraceId;
+    bool UsePayloadInResponse = false;
+};
+
+NActors::NTask::task<void> RunReadV2TaskAndSendTo(const NActors::TActorId& target, TReadV2TaskArgs args) {
+    bool needFallback = true;
+    std::unique_ptr<TEvKeyValue::TEvReadResponse> response;
+
+    auto* resolveSubSystem = NActors::TActivationContext::ActorSystem()->GetSubSystem<TKeyValueResolveSubSystem>();
+    if (resolveSubSystem) {
+        TKeyValueResolveKey key;
+        key.Database = std::move(args.Database);
+        key.Path = std::move(args.Path);
+
+        auto cached = resolveSubSystem->Find(key);
+        if (cached && cached->ExpireAt > NActors::TActivationContext::Monotonic()) {
+            const auto partitionIt = cached->PartitionToTabletId.find(args.PartitionId);
+            if (partitionIt != cached->PartitionToTabletId.end() && partitionIt->second) {
+                bool accessAllowed = true;
+                if (args.UserToken && cached->SecurityObject) {
+                    accessAllowed = cached->SecurityObject->CheckAccess(NACLib::SelectRow, *args.UserToken);
+                }
+
+                if (accessAllowed) {
+                    NKeyValue::NTask::TReadTaskArgs readTaskArgs;
+                    readTaskArgs.TabletId = partitionIt->second;
+                    readTaskArgs.Request = std::move(args.Request);
+                    readTaskArgs.KeyValueActorId = target;
+                    readTaskArgs.RespondTo = target;
+                    readTaskArgs.TraceId = std::move(args.TraceId);
+                    readTaskArgs.UsePayloadInResponse = args.UsePayloadInResponse;
+
+                    auto readTaskResult = co_await NKeyValue::NTask::RunReadTask(std::move(readTaskArgs));
+                    if (!readTaskResult.NeedsFallback && readTaskResult.Response) {
+                        needFallback = false;
+                        response = std::move(readTaskResult.Response);
+                    }
+                }
+            }
+        }
+    }
+
+    NActors::TActivationContext::AsActorContext().Send(target,
+        new TEvReadTaskDone(std::move(response), needFallback));
+    co_return;
+}
+
+} // namespace NPrivate
 
 void AppendVarint(TString& out, ui64 value) {
     while (value >= 0x80) {
@@ -1378,8 +1458,20 @@ public:
             Ydb::KeyValue::ReadResult, TEvKeyValue::TEvRead, IsOperational>;
     using TBase::TBase;
     using TBase::Handle;
+
+    void Bootstrap(const TActorContext& ctx) {
+        if constexpr (!IsOperational) {
+            if (TryStartReadInTaskV2()) {
+                this->Become(&TReadRequest::StateFunc);
+                return;
+            }
+        }
+        TBase::Bootstrap(ctx);
+    }
+
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
+            hFunc(NPrivate::TEvReadTaskDone, Handle);
         default:
             return TBase::StateFunc(ev);
         }
@@ -1453,6 +1545,58 @@ public:
 
     NACLib::EAccessRights GetRequiredAccessRights() const {
         return NACLib::SelectRow;
+    }
+
+    void Handle(NPrivate::TEvReadTaskDone::TPtr& ev) {
+        if constexpr (!IsOperational) {
+            auto& done = *ev->Get();
+            if (done.NeedFallback || !done.Response) {
+                this->OnBootstrap();
+                return;
+            }
+
+            const auto status = PullStatus(done.Response->Record);
+            if (TryReplyReadResultWithCustomSerialization(*done.Response, status,
+                    this->RequestSettings.UseCustomSerialization, this->Request.Get())) {
+                this->PassAway();
+                return;
+            }
+
+            Ydb::KeyValue::ReadResult result;
+            CopyReadResultFromEvent(*done.Response, &result);
+            result.set_status(status);
+            this->Request->Reply(&result, status);
+            this->PassAway();
+        } else {
+            Y_UNUSED(ev);
+            this->Reply(Ydb::StatusIds::INTERNAL_ERROR, "Unexpected task completion event",
+                NKikimrIssues::TIssuesIds::DEFAULT_ERROR);
+        }
+    }
+
+private:
+    bool TryStartReadInTaskV2() {
+        if constexpr (IsOperational) {
+            return false;
+        } else {
+            auto* taskSystem = TActivationContext::ActorSystem()->GetSubSystem<NActors::NTask::TTaskSystem>();
+            if (!taskSystem || !taskSystem->IsInitialized()) {
+                return false;
+            }
+
+            const auto& protoRequest = *this->GetProtoRequest();
+            NPrivate::TReadV2TaskArgs taskArgs;
+            taskArgs.Database = this->GetDatabaseName();
+            taskArgs.Path = protoRequest.path();
+            taskArgs.PartitionId = protoRequest.partition_id();
+            taskArgs.UserToken = this->GetToken();
+            CopyProtobuf(protoRequest, &taskArgs.Request);
+            taskArgs.TraceId = this->GetTraceId();
+            taskArgs.UsePayloadInResponse = this->RequestSettings.UseCustomSerialization;
+
+            taskSystem->Enqueue(NPrivate::RunReadV2TaskAndSendTo(this->SelfId(), std::move(taskArgs)));
+            return true;
+        }
     }
 };
 
