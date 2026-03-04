@@ -53,7 +53,10 @@ namespace NKikimr::NStorage {
         vdisk.ScrubCookie = 0; // disable reception of Scrub messages from this disk
         vdisk.ScrubCookieForController = 0; // and from controller too
         vdisk.Status = NKikimrBlobStorage::EVDiskStatus::ERROR;
-        vdisk.ShutdownPending = vdiskRunning; // Shutdown pending only if VDisk was running before poison
+        // ShutdownPending must be sticky: PoisonLocalVDisk may be invoked multiple times before we receive TEvGone from
+        // the VDisk actor. In that case RuntimeData is already reset and vdiskRunning is false, but shutdown is still
+        // in progress and must not be cleared.
+        vdisk.ShutdownPending = vdisk.ShutdownPending || vdiskRunning;
         VDiskStatusChanged = true;
     }
 

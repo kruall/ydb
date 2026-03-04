@@ -1282,6 +1282,59 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
         }
     }
 
+    CUSTOM_UNIT_TEST(TestDoubleAskRestartVDiskBeforeGone) {
+        // Regression test for a race:
+        // - TEvAskRestartVDisk triggers PoisonLocalVDisk (ShutdownPending becomes true, RuntimeData reset, Poison sent)
+        // - a second TEvAskRestartVDisk can arrive before TEvGone from the VDisk actor
+        // The shutdown is still in progress at this point and must not be "un-pended".
+        TTestBasicRuntime runtime(1, false);
+        Setup(runtime, "", nullptr);
+
+        const ui32 nodeId = runtime.GetNodeId(0);
+        const TActorId nodeWardenServiceId = MakeBlobStorageNodeWardenID(nodeId);
+        const TActorId nodeWardenActorId = runtime.GetLocalServiceId(nodeWardenServiceId, 0);
+
+        // This config is created in SetupServices(): a static group with generation 1 and VDisks (FailDomain 0..7).
+        const ui32 groupId = TGroupID(EGroupConfigurationType::Static, DOMAIN_ID, 0).GetRaw();
+        const ui32 pdiskId = 0;
+        const TVDiskID vdiskId(groupId, 1, 0, 0, 0);
+
+        const TActorId sender = runtime.AllocateEdgeActor(0);
+
+        TActorId poisonedActorId;
+        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) -> TTestActorRuntime::EEventAction {
+            if (!poisonedActorId && ev->GetTypeRewrite() == TEvents::TSystem::Poison) {
+                // Recipient is rewritten from a service id to an actor id at send time, so capturing it here is stable.
+                poisonedActorId = ev->Recipient;
+            }
+            return TTestActorRuntime::EEventAction::PROCESS;
+        });
+
+        runtime.Send(new IEventHandle(nodeWardenServiceId, sender, new TEvBlobStorage::TEvAskRestartVDisk(pdiskId, vdiskId)));
+        runtime.Send(new IEventHandle(nodeWardenServiceId, sender, new TEvBlobStorage::TEvAskRestartVDisk(pdiskId, vdiskId)));
+
+        // Process only NodeWarden mailbox to guarantee the second restart is handled before the VDisk actor processes Poison.
+        {
+            TDispatchOptions options;
+            options.OnlyMailboxes.emplace_back(nodeWardenActorId);
+            options.FinalEvents.emplace_back(TEvBlobStorage::EvAskRestartVDisk, 2);
+            runtime.DispatchEvents(options, TDuration::Seconds(10));
+        }
+
+        UNIT_ASSERT_C(poisonedActorId, "Failed to capture VDisk poison recipient actor id");
+
+        // Now allow the poisoned VDisk actor to actually process Poison and send TEvGone to NodeWarden.
+        {
+            TDispatchOptions options;
+            options.OnlyMailboxes.emplace_back(poisonedActorId);
+            options.OnlyMailboxes.emplace_back(nodeWardenActorId);
+            options.FinalEvents.emplace_back(TEvents::TSystem::Gone, 1);
+            runtime.DispatchEvents(options, TDuration::Seconds(30));
+        }
+
+        runtime.SetObserverFunc(prevObserver);
+    }
+
     CUSTOM_UNIT_TEST(TestEvVGenerationChangeRace) {
         TTestBasicRuntime runtime(1, false);
         Setup(runtime, "", nullptr);
