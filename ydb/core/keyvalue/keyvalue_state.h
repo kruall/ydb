@@ -8,7 +8,6 @@
 #include "keyvalue_helpers.h"
 #include "keyvalue_index_record.h"
 #include "keyvalue_intermediate.h"
-#include "keyvalue_task_read_prepare.h"
 #include "keyvalue_item_type.h"
 #include "keyvalue_stored_state_data.h"
 #include "keyvalue_simple_db.h"
@@ -298,8 +297,6 @@ protected:
     TMemorizableControlWrapper ReadRequestsInFlightLimit;
     TControlWrapper UsePayload_Base;
     TMemorizableControlWrapper UsePayload;
-    NTask::TReadSharedSnapshotPtr ReadSharedSnapshot;
-    ui64 ReadSharedSnapshotEpoch = 0;
 
 public:
     TKeyValueState();
@@ -646,13 +643,6 @@ public:
     void InitializeRequestUidAndTime(THolder<TIntermediate>& intermediate);
     void RegisterPreparedReadIntermediate(const TActorContext& ctx, THolder<TIntermediate>&& intermediate,
         TRequestType::EType requestType, const TTabletStorageInfo *info);
-    bool TryPrepareReadInTask(const TActorContext &ctx, const NKikimrKeyValue::ReadRequest &request,
-        const TActorId& respondTo, NWilson::TTraceId traceId, const TTabletStorageInfo *info);
-    bool TryPrepareReadRangeInTask(const TActorContext &ctx, const NKikimrKeyValue::ReadRangeRequest &request,
-        const TActorId& respondTo, NWilson::TTraceId traceId, const TTabletStorageInfo *info);
-    void RebuildReadSharedSnapshot(const TTabletStorageInfo *info);
-    void PublishReadSharedSnapshotUpdate();
-    void PublishReadSharedSnapshotErase();
 
     template <typename TRequestType>
     void PostponeIntermediate(THolder<TIntermediate> &&intermediate) {

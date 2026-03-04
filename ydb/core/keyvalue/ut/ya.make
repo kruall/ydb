@@ -24,7 +24,6 @@ SRCS(
     keyvalue_ut.cpp
     keyvalue_collector_ut.cpp
     keyvalue_storage_read_request_ut.cpp
-    keyvalue_task_read_prepare_ut.cpp
 )
 
 END()
