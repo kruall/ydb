@@ -157,7 +157,9 @@ Y_UNIT_TEST(UsesInlineSnapshotPath) {
 
     auto ev = runtime.WaitForEdgeActorEvent<TEvKeyValue::TEvReadResponse>(edge);
     UNIT_ASSERT(ev);
-    UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Record.status(), NKikimrKeyValue::Statuses::RSTATUS_OK);
+    UNIT_ASSERT_VALUES_EQUAL(
+        static_cast<int>(ev->Get()->Record.status()),
+        static_cast<int>(NKikimrKeyValue::Statuses::RSTATUS_OK));
     UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Record.value(), "inline-value");
     UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Record.cookie(), 17);
 }
@@ -205,7 +207,9 @@ Y_UNIT_TEST(ReadsBlobDataBySnapshotPath) {
 
     auto ev = runtime.WaitForEdgeActorEvent<TEvKeyValue::TEvReadResponse>(edge);
     UNIT_ASSERT(ev);
-    UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Record.status(), NKikimrKeyValue::Statuses::RSTATUS_OK);
+    UNIT_ASSERT_VALUES_EQUAL(
+        static_cast<int>(ev->Get()->Record.status()),
+        static_cast<int>(NKikimrKeyValue::Statuses::RSTATUS_OK));
     UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Record.value(), "hello");
 }
 
