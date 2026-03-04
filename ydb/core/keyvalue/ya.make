@@ -37,6 +37,8 @@ SRCS(
     keyvalue_storage_request.h
     keyvalue_stored_state_data.cpp
     keyvalue_stored_state_data.h
+    keyvalue_task_read.cpp
+    keyvalue_task_read.h
     keyvalue_trash_key_arbitrary.h
     keyvalue_utils.cpp
     keyvalue_utils.h

@@ -13,6 +13,7 @@
 #include <ydb/core/tablet/tablet_metrics.h>
 #include <ydb/core/util/stlog.h>
 #include <ydb/library/actors/core/events.h>
+#include <ydb/library/actors/task/task_system.h>
 #include <ydb/library/wilson_ids/wilson.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/json/writer/json_value.h>
@@ -70,6 +71,44 @@ bool IsKeyLengthValid(const TString& key) {
     return key.length() <= MaxKeySize;
 }
 
+NActors::NTask::task<void> RunReadTaskAndSendTo(const NActors::TActorId& target,
+        NKikimrKeyValue::ReadRequest fallbackRequest, NTask::TReadSharedSnapshotPtr snapshot,
+        NTask::TReadTaskArgs args)
+{
+    const TActorId respondTo = args.RespondTo;
+    auto result = co_await NTask::RunReadTask(std::move(args));
+    auto& ctx = NActors::TActivationContext::AsActorContext();
+
+    if (result.NeedsFallback || !result.Response) {
+        if (snapshot) {
+            snapshot->Invalidate();
+        }
+        auto* ev = new TEvKeyValue::TEvRead();
+        ev->Record = std::move(fallbackRequest);
+        ctx.Send(new NActors::IEventHandle(target, respondTo, ev, 0, 0));
+    } else {
+        ctx.Send(respondTo, result.Response.release());
+    }
+    co_return;
+}
+
+NActors::NTask::task<void> PublishReadSharedSnapshotUpdateTask(
+        NTask::TReadSharedSnapshotSubSystem* subSystem,
+        ui64 tabletId,
+        NTask::TReadSharedSnapshotPtr snapshot)
+{
+    subSystem->Update(tabletId, std::move(snapshot));
+    co_return;
+}
+
+NActors::NTask::task<void> PublishReadSharedSnapshotEraseTask(
+        NTask::TReadSharedSnapshotSubSystem* subSystem,
+        ui64 tabletId)
+{
+    subSystem->Erase(tabletId);
+    co_return;
+}
+
 template <class R, class I>
 void PrepareCreationUnixTime(const R& request, I& interm)
 {
@@ -125,6 +164,12 @@ void TKeyValueState::Clear() {
     TabletId = 0;
     KeyValueActorId = TActorId();
     ExecutorGeneration = 0;
+    TabletInfoForTaskRead.Reset();
+    if (ReadSharedSnapshot) {
+        ReadSharedSnapshot->Invalidate();
+        ReadSharedSnapshot.reset();
+    }
+    ReadSharedSnapshotEpoch = 0;
 
     Queue.clear();
     IntermediatesInFlight = 0;
@@ -451,6 +496,7 @@ void TKeyValueState::CountOnline() {
 //
 
 void TKeyValueState::Terminate(const TActorContext& ctx) {
+    PublishReadSharedSnapshotErase();
     ctx.Send(ChannelBalancerActorId, new TEvents::TEvPoisonPill);
 }
 
@@ -550,6 +596,7 @@ void TKeyValueState::InitExecute(ui64 tabletId, TActorId keyValueActorId, ui32 e
     TabletId = tabletId;
     KeyValueActorId = keyValueActorId;
     ExecutorGeneration = executorGeneration;
+    TabletInfoForTaskRead = const_cast<TTabletStorageInfo*>(info);
     if (IsDamaged) {
         return;
     }
@@ -787,6 +834,8 @@ void TKeyValueState::OnInitQueueEmpty() {
 
 void TKeyValueState::OnStateWork() {
     CountProcessingInitQueue();
+    RebuildReadSharedSnapshot();
+    PublishReadSharedSnapshotUpdate();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1771,6 +1820,8 @@ bool TKeyValueState::IncrementGeneration(THolder<TIntermediate> &intermediate, I
     StoredState.SetUserGeneration(nextGeneration);
 
     THelpers::DbUpdateState(StoredState, db);
+    RebuildReadSharedSnapshot();
+    PublishReadSharedSnapshotUpdate();
 
     intermediate->Response.MutableIncrementGenerationResult()->SetGeneration(nextGeneration);
     intermediate->Response.SetStatus(NMsgBusProxy::MSTATUS_OK);
@@ -1847,6 +1898,11 @@ void TKeyValueState::OnRequestComplete(ui64 requestUid, ui64 generation, ui64 st
     CountLatencyBsOps(stat);
 
     RequestInputTime.erase(requestUid);
+
+    if (stat.RequestType == TRequestType::WriteOnly || stat.RequestType == TRequestType::ReadWrite) {
+        RebuildReadSharedSnapshot();
+        PublishReadSharedSnapshotUpdate();
+    }
 
     if (stat.RequestType != TRequestType::WriteOnly) {
         if (stat.RequestType == TRequestType::ReadOnlyInline) {
@@ -3213,6 +3269,89 @@ void TKeyValueState::RegisterPreparedReadIntermediate(const TActorContext& ctx, 
     CountRequestTakeOffOrEnqueue(requestType);
 }
 
+bool TKeyValueState::TryReadInTask(const TActorContext &ctx, const NKikimrKeyValue::ReadRequest &request,
+        const TActorId& respondTo, NWilson::TTraceId traceId)
+{
+    auto* taskSystem = TActivationContext::ActorSystem()->GetSubSystem<NActors::NTask::TTaskSystem>();
+    if (!taskSystem || !taskSystem->IsInitialized() || !ReadSharedSnapshot
+            || !ReadSharedSnapshot->IsActual.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    NTask::TReadTaskArgs args;
+    args.TabletId = TabletId;
+    args.Request = request;
+    args.KeyValueActorId = ctx.SelfID;
+    args.RespondTo = respondTo;
+    args.TraceId = std::move(traceId);
+    args.UsePayloadInResponse = static_cast<bool>(UsePayload.Update(ctx.Now()));
+
+    taskSystem->Enqueue(RunReadTaskAndSendTo(
+        ctx.SelfID,
+        request,
+        ReadSharedSnapshot,
+        std::move(args)));
+    return true;
+}
+
+void TKeyValueState::RebuildReadSharedSnapshot() {
+    if (!TabletInfoForTaskRead) {
+        return;
+    }
+
+    auto snapshot = std::make_shared<NTask::TReadSharedSnapshot>();
+    snapshot->Epoch = ++ReadSharedSnapshotEpoch;
+    snapshot->TabletId = TabletId;
+    snapshot->UserGeneration = StoredState.GetUserGeneration();
+    snapshot->ChannelGeneration = ExecutorGeneration;
+    snapshot->ChannelStep = NextLogoBlobStep - 1;
+    snapshot->TabletInfo = TabletInfoForTaskRead;
+
+    for (const auto& [key, record] : Index) {
+        NTask::TReadIndexRecordSnapshot dst;
+        dst.CreationUnixTime = record.CreationUnixTime;
+        dst.Chain.reserve(record.Chain.size());
+        for (const auto& item : record.Chain) {
+            NTask::TReadChainItemSnapshot chainItem;
+            chainItem.LogoBlobId = item.LogoBlobId;
+            chainItem.InlineData = item.InlineData;
+            chainItem.Offset = item.Offset;
+            dst.Chain.push_back(std::move(chainItem));
+        }
+        snapshot->Index.emplace(key, std::move(dst));
+    }
+    snapshot->IsActual.store(true, std::memory_order_release);
+
+    if (ReadSharedSnapshot) {
+        ReadSharedSnapshot->Invalidate();
+    }
+    ReadSharedSnapshot = std::move(snapshot);
+}
+
+void TKeyValueState::PublishReadSharedSnapshotUpdate() {
+    auto* actorSystem = TActivationContext::ActorSystem();
+    auto* subSystem = actorSystem->GetSubSystem<NTask::TReadSharedSnapshotSubSystem>();
+    auto* taskSystem = actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>();
+    if (!subSystem || !taskSystem || !taskSystem->IsInitialized() || !ReadSharedSnapshot) {
+        return;
+    }
+    taskSystem->Enqueue(PublishReadSharedSnapshotUpdateTask(subSystem, TabletId, ReadSharedSnapshot));
+}
+
+void TKeyValueState::PublishReadSharedSnapshotErase() {
+    auto* actorSystem = TActivationContext::ActorSystem();
+    auto* subSystem = actorSystem->GetSubSystem<NTask::TReadSharedSnapshotSubSystem>();
+    auto* taskSystem = actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>();
+    if (subSystem && taskSystem && taskSystem->IsInitialized()) {
+        taskSystem->Enqueue(PublishReadSharedSnapshotEraseTask(subSystem, TabletId));
+    }
+
+    if (ReadSharedSnapshot) {
+        ReadSharedSnapshot->Invalidate();
+        ReadSharedSnapshot.reset();
+    }
+}
+
 void RegisterReadRequestActor(const TActorContext &ctx, THolder<TIntermediate> &&intermediate,
         const TTabletStorageInfo *info, ui32 tabletGeneration)
 {
@@ -3222,6 +3361,12 @@ void RegisterReadRequestActor(const TActorContext &ctx, THolder<TIntermediate> &
 void TKeyValueState::RegisterRequestActor(const TActorContext &ctx, THolder<TIntermediate> &&intermediate,
         const TTabletStorageInfo *info, ui32 tabletGeneration)
 {
+    if (ReadSharedSnapshot
+            && (intermediate->Stat.RequestType == TRequestType::WriteOnly
+                || intermediate->Stat.RequestType == TRequestType::ReadWrite)) {
+        ReadSharedSnapshot->Invalidate();
+    }
+
     auto fixWrite = [&](TIntermediate::TWrite& write) {
         for (auto& logoBlobId : write.LogoBlobIds) {
             Y_ABORT_UNLESS(logoBlobId.TabletID() == 0);
@@ -3290,6 +3435,10 @@ void TKeyValueState::OnEvReadRequest(TEvKeyValue::TEvRead::TPtr &ev, const TActo
 {
     ResourceMetrics->Network.Increment(ev->Get()->Record.ByteSize());
     ResourceMetrics->TryUpdate(ctx);
+
+    if (TryReadInTask(ctx, ev->Get()->Record, ev->Sender, NWilson::TTraceId(ev->TraceId))) {
+        return;
+    }
 
     TRequestType::EType requestType = TRequestType::ReadOnly;
     CountRequestIncoming(requestType);

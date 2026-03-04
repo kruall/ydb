@@ -10,6 +10,7 @@
 #include "keyvalue_intermediate.h"
 #include "keyvalue_item_type.h"
 #include "keyvalue_stored_state_data.h"
+#include "keyvalue_task_read.h"
 #include "keyvalue_simple_db.h"
 #include "channel_balancer.h"
 #include <util/generic/set.h>
@@ -265,6 +266,9 @@ protected:
     ui64 TabletId;
     TActorId KeyValueActorId;
     ui32 ExecutorGeneration;
+    TIntrusivePtr<TTabletStorageInfo> TabletInfoForTaskRead;
+    NTask::TReadSharedSnapshotPtr ReadSharedSnapshot;
+    ui64 ReadSharedSnapshotEpoch = 0;
     bool IsStatePresent;
     bool IsEmptyDbStart;
     bool IsDamaged;
@@ -643,6 +647,11 @@ public:
     void InitializeRequestUidAndTime(THolder<TIntermediate>& intermediate);
     void RegisterPreparedReadIntermediate(const TActorContext& ctx, THolder<TIntermediate>&& intermediate,
         TRequestType::EType requestType, const TTabletStorageInfo *info);
+    bool TryReadInTask(const TActorContext &ctx, const NKikimrKeyValue::ReadRequest &request,
+        const TActorId& respondTo, NWilson::TTraceId traceId);
+    void RebuildReadSharedSnapshot();
+    void PublishReadSharedSnapshotUpdate();
+    void PublishReadSharedSnapshotErase();
 
     template <typename TRequestType>
     void PostponeIntermediate(THolder<TIntermediate> &&intermediate) {
