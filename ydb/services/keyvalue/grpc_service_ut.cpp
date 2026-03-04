@@ -1,12 +1,15 @@
 #include "grpc_service_v1.h"
 #include "grpc_service_v2.h"
 
+#include <ydb/core/grpc_services/rpc_keyvalue_resolve_state.h>
 #include <ydb/core/keyvalue/keyvalue.h>
 #include <ydb/core/keyvalue/keyvalue_events.h>
+#include <ydb/core/keyvalue/keyvalue_task_read.h>
 #include <ydb/core/protos/config.pb.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/test_client.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
+#include <ydb/library/actors/task/task_system.h>
 
 #include <ydb/public/api/grpc/ydb_scheme_v1.grpc.pb.h>
 
@@ -147,6 +150,32 @@ namespace {
             }
         }
     };
+
+    void RegisterKeyValueTaskSubSystems(Tests::TServer& server) {
+        auto* runtime = server.GetRuntime();
+        const auto& settings = server.GetSettings();
+        const ui32 nodeCount = settings.NodeCount + settings.DynamicNodeCount;
+
+        for (ui32 nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
+            auto* actorSystem = runtime->GetActorSystem(nodeIdx);
+            UNIT_ASSERT(actorSystem);
+
+            if (!actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>()) {
+                auto taskSystem = std::make_unique<NActors::NTask::TTaskSystem>();
+                const ui32 userPoolId = runtime->GetAppData(nodeIdx).UserPoolId;
+                taskSystem->Initialize(actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors, userPoolId);
+                actorSystem->RegisterSubSystem(std::move(taskSystem));
+            }
+
+            if (!actorSystem->GetSubSystem<NKeyValue::NTask::TReadSharedSnapshotSubSystem>()) {
+                actorSystem->RegisterSubSystem(std::make_unique<NKeyValue::NTask::TReadSharedSnapshotSubSystem>());
+            }
+
+            if (!actorSystem->GetSubSystem<TKeyValueResolveSubSystem>()) {
+                actorSystem->RegisterSubSystem(std::make_unique<TKeyValueResolveSubSystem>());
+            }
+        }
+    }
 }
 
 
@@ -179,6 +208,7 @@ public:
 
         Server_.Reset(new Tests::TServer(*ServerSettings));
         Tenants_.Reset(new Tests::TTenants(Server_));
+        RegisterKeyValueTaskSubSystems(*Server_);
 
         //Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_PROXY_SCHEME_CACHE, NActors::NLog::PRI_DEBUG);
         //Server_->GetRuntime()->SetLogPriority(NKikimrServices::SCHEME_BOARD_REPLICA, NActors::NLog::PRI_DEBUG);
