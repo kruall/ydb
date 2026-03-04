@@ -151,30 +151,31 @@ namespace {
         }
     };
 
-    void RegisterKeyValueTaskSubSystems(Tests::TServer& server) {
-        auto* runtime = server.GetRuntime();
-        const auto& settings = server.GetSettings();
-        const ui32 nodeCount = settings.NodeCount + settings.DynamicNodeCount;
+    void InstallKeyValueTaskSubSystemsInitializer(Tests::TServerSettings& settings) {
+        auto prevLoggerInitializer = settings.LoggerInitializer;
+        settings.SetLoggerInitializer(
+            [prevLoggerInitializer = std::move(prevLoggerInitializer)](NActors::TTestActorRuntime& runtime) mutable {
+                if (prevLoggerInitializer) {
+                    prevLoggerInitializer(runtime);
+                }
 
-        for (ui32 nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-            auto* actorSystem = runtime->GetActorSystem(nodeIdx);
-            UNIT_ASSERT(actorSystem);
+                runtime.AddActorSystemInit([](ui32, NActors::TActorSystem& actorSystem) {
+                    if (!actorSystem.GetSubSystem<NActors::NTask::TTaskSystem>()) {
+                        auto taskSystem = std::make_unique<NActors::NTask::TTaskSystem>();
+                        const ui32 userPoolId = NKikimr::AppData(&actorSystem)->UserPoolId;
+                        taskSystem->Initialize(&actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors, userPoolId);
+                        actorSystem.RegisterSubSystem(std::move(taskSystem));
+                    }
 
-            if (!actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>()) {
-                auto taskSystem = std::make_unique<NActors::NTask::TTaskSystem>();
-                const ui32 userPoolId = runtime->GetAppData(nodeIdx).UserPoolId;
-                taskSystem->Initialize(actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors, userPoolId);
-                actorSystem->RegisterSubSystem(std::move(taskSystem));
-            }
+                    if (!actorSystem.GetSubSystem<NKeyValue::NTask::TReadSharedSnapshotSubSystem>()) {
+                        actorSystem.RegisterSubSystem(std::make_unique<NKeyValue::NTask::TReadSharedSnapshotSubSystem>());
+                    }
 
-            if (!actorSystem->GetSubSystem<NKeyValue::NTask::TReadSharedSnapshotSubSystem>()) {
-                actorSystem->RegisterSubSystem(std::make_unique<NKeyValue::NTask::TReadSharedSnapshotSubSystem>());
-            }
-
-            if (!actorSystem->GetSubSystem<TKeyValueResolveSubSystem>()) {
-                actorSystem->RegisterSubSystem(std::make_unique<TKeyValueResolveSubSystem>());
-            }
-        }
+                    if (!actorSystem.GetSubSystem<TKeyValueResolveSubSystem>()) {
+                        actorSystem.RegisterSubSystem(std::make_unique<TKeyValueResolveSubSystem>());
+                    }
+                });
+            });
     }
 }
 
@@ -205,10 +206,10 @@ public:
         ServerSettings->FeatureFlags.SetAllowUpdateChannelsBindingOfSolomonPartitions(true);
         ServerSettings->RegisterGrpcService<NKikimr::NGRpcService::TKeyValueGRpcServiceV1>("keyvalue");
         ServerSettings->RegisterGrpcService<NKikimr::NGRpcService::TKeyValueGRpcServiceV2>("keyvalue");
+        InstallKeyValueTaskSubSystemsInitializer(*ServerSettings);
 
         Server_.Reset(new Tests::TServer(*ServerSettings));
         Tenants_.Reset(new Tests::TTenants(Server_));
-        RegisterKeyValueTaskSubSystems(*Server_);
 
         //Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_PROXY_SCHEME_CACHE, NActors::NLog::PRI_DEBUG);
         //Server_->GetRuntime()->SetLogPriority(NKikimrServices::SCHEME_BOARD_REPLICA, NActors::NLog::PRI_DEBUG);
