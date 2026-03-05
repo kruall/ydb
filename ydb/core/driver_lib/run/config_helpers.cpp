@@ -177,10 +177,12 @@ void AddTaskSystemForUserPool(NActors::TActorSystemSetup& setup, ui32 userPoolId
         actorSystem.RegisterSubSystem(std::make_unique<NActors::NTask::TTaskSystem>());
     });
 
+    const ui32 taskExecutors = maxThreads * 2;
+
     setup.LocalServices.emplace_back(
         NActors::TActorId(),
         NActors::TActorSetupCmd(
-            new TTaskSystemInitializerActor(maxThreads, userPoolId),
+            new TTaskSystemInitializerActor(taskExecutors, userPoolId),
             NActors::TMailboxType::HTSwap,
             userPoolId));
 }

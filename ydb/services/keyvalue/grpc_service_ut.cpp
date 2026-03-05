@@ -178,7 +178,7 @@ namespace {
                     UNIT_ASSERT(taskSystem);
                     if (!taskSystem->IsInitialized()) {
                         const ui32 userPoolId = NKikimr::AppData(&actorSystem)->UserPoolId;
-                        taskSystem->Initialize(&actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors, userPoolId);
+                        taskSystem->Initialize(&actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors * 2, userPoolId);
                     }
                 });
             });
