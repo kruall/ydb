@@ -27,7 +27,7 @@ namespace NActors::NTask {
 
         class ITaskEventAwaiter {
         public:
-            virtual bool TryConsumeQueued() = 0;
+            virtual bool TryConsumeQueued(std::coroutine_handle<>& outContinuation) = 0;
 
         protected:
             ~ITaskEventAwaiter() = default;
@@ -194,7 +194,11 @@ namespace NActors::NTask {
             TExecutor* executor = FindExecutor(executorActorId);
             const ui64 cookie = ev->Cookie;
             if (StoreEventInQueue(executor, cookie, ev)) {
-                TryConsumeQueuedEvent(executor, cookie);
+                std::coroutine_handle<> continuation;
+                if (TryConsumeQueuedEvent(executor, cookie, continuation)) {
+                    Y_ABORT_UNLESS(continuation, "WaitEvent continuation is not set");
+                    RunTask(continuation, executorActorId);
+                }
                 return true;
             }
             return false;
@@ -371,13 +375,14 @@ namespace NActors::NTask {
             return true;
         }
 
-        bool TryConsumeQueuedEvent(TExecutor* executor, ui64 cookie) {
+        bool TryConsumeQueuedEvent(TExecutor* executor, ui64 cookie, std::coroutine_handle<>& outContinuation) {
             auto it = executor->EventAwaiters.find(cookie);
             if (it == executor->EventAwaiters.end()) {
                 return false;
             }
-            for (auto* awaiter : it->second) {
-                if (awaiter->TryConsumeQueued()) {
+            const auto awaiters = it->second;
+            for (auto* awaiter : awaiters) {
+                if (awaiter->TryConsumeQueued(outContinuation)) {
                     return true;
                 }
             }
@@ -461,16 +466,11 @@ namespace NActors::NTask {
                 return std::move(Result);
             }
 
-            bool TryConsumeQueued() override {
+            bool TryConsumeQueued(std::coroutine_handle<>& outContinuation) override {
                 Y_ABORT_UNLESS(System, "Unexpected TryConsumeQueued call after awaiter detach");
                 if (TryTakeQueuedEvent()) {
-                    auto* system = System;
-                    const TActorId executorActorId = ExecutorActorId;
+                    outContinuation = Continuation;
                     Detach();
-                    // Resume continuation under task executor context so subsequent task APIs
-                    // (e.g. CreateEventQueue) observe correct CurrentRunContext.
-                    const TTaskSystem::TRunContextGuard contextGuard(system, executorActorId);
-                    Continuation.resume();
                     return true;
                 }
                 return false;
