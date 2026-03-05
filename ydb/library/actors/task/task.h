@@ -11,6 +11,30 @@ namespace NActors::NTask {
 
     namespace NDetail {
 
+        using TTaskHandleHook = void(*)(std::coroutine_handle<>) noexcept;
+
+        inline TTaskHandleHook TaskAwaitSuspendHook = nullptr;
+        inline TTaskHandleHook TaskFinalSuspendHook = nullptr;
+        inline TTaskHandleHook TaskDestroyHook = nullptr;
+
+        inline void NotifyTaskAwaitSuspend(std::coroutine_handle<> handle) noexcept {
+            if (TaskAwaitSuspendHook) {
+                TaskAwaitSuspendHook(handle);
+            }
+        }
+
+        inline void NotifyTaskFinalSuspend(std::coroutine_handle<> handle) noexcept {
+            if (TaskFinalSuspendHook) {
+                TaskFinalSuspendHook(handle);
+            }
+        }
+
+        inline void NotifyTaskDestroy(std::coroutine_handle<> handle) noexcept {
+            if (TaskDestroyHook) {
+                TaskDestroyHook(handle);
+            }
+        }
+
         template<class T>
         class TTaskResult {
         public:
@@ -100,6 +124,7 @@ namespace NActors::NTask {
 
                 template<class TPromise>
                 static std::coroutine_handle<> await_suspend(std::coroutine_handle<TPromise> self) noexcept {
+                    NotifyTaskFinalSuspend(std::coroutine_handle<>(self));
                     auto c = self.promise().Continuation_;
                     return c ? c : std::noop_coroutine();
                 }
@@ -172,6 +197,7 @@ namespace NActors::NTask {
 
         void Destroy() noexcept {
             if (Handle_) {
+                NDetail::NotifyTaskDestroy(std::coroutine_handle<>(Handle_));
                 Handle_.destroy();
                 Handle_ = nullptr;
             }
@@ -200,6 +226,7 @@ namespace NActors::NTask {
 
             ~TAwaiter() {
                 if (Handle) {
+                    NDetail::NotifyTaskDestroy(std::coroutine_handle<>(Handle));
                     Handle.destroy();
                 }
             }
@@ -210,6 +237,7 @@ namespace NActors::NTask {
 
             std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
                 Handle.promise().SetContinuation(caller);
+                NDetail::NotifyTaskAwaitSuspend(std::coroutine_handle<>(Handle));
                 return Handle;
             }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ydb/library/actors/core/actor.h>
 #include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/core/events.h>
 #include <ydb/library/actors/core/subsystem.h>
@@ -8,8 +9,11 @@
 #include <util/generic/deque.h>
 #include <util/generic/vector.h>
 #include <util/random/random.h>
+#include <util/system/mutex.h>
 #include <util/system/yassert.h>
 #include <coroutine>
+#include <memory>
+#include <new>
 #include <type_traits>
 #include <utility>
 
@@ -73,6 +77,7 @@ namespace NActors::NTask {
             Y_ASSERT(executorCount > 0);
             Y_ASSERT(!IsInitialized());
 
+            InstallTaskHooks();
             ActorSystem_ = actorSystem;
             Executors_.clear();
             Executors_.reserve(executorCount);
@@ -181,10 +186,53 @@ namespace NActors::NTask {
         template<class TEvent>
         friend class NDetail::TTaskEventAwaiter;
 
+        struct TTaskActorContextState {
+            ~TTaskActorContextState() {
+                Reset();
+            }
+
+            void Refresh(const TActorContext& context) {
+                Reset();
+                std::construct_at(GetStorage(), context.Mailbox, context.ExecutorThread, context.EventStart, context.SelfID);
+                Constructed = true;
+            }
+
+            TActorContext* Get() {
+                Y_ABORT_UNLESS(Constructed, "task actor context is not initialized");
+                return std::launder(reinterpret_cast<TActorContext*>(Storage));
+            }
+
+        private:
+            void Reset() {
+                if (Constructed) {
+                    std::destroy_at(Get());
+                    Constructed = false;
+                }
+            }
+
+            TActorContext* GetStorage() {
+                return reinterpret_cast<TActorContext*>(Storage);
+            }
+
+        private:
+            alignas(TActorContext) unsigned char Storage[sizeof(TActorContext)];
+            bool Constructed = false;
+        };
+
+        struct TTaskActorContextEntry {
+            TTaskSystem* System = nullptr;
+            std::shared_ptr<TTaskActorContextState> State;
+        };
+
         void RunTask(std::coroutine_handle<> handle, const TActorId& executorActorId, bool destroyOnDone) {
             Y_ABORT_UNLESS(IsExecutorActor(executorActorId), "TTaskSystem tasks must run only in task executor actors");
 
-            const TRunContextGuard contextGuard(this, executorActorId, destroyOnDone);
+            auto actorContextState = GetOrCreateTaskActorContext(handle);
+            const auto& actorContext = TActivationContext::AsActorContext();
+            actorContextState->Refresh(actorContext);
+
+            const TRunContextGuard contextGuard(this, executorActorId, destroyOnDone, actorContextState);
+            const TTlsActorContextGuard tlsActorContextGuard(*actorContextState->Get());
             handle.resume();
 
             if (destroyOnDone && handle.done()) {
@@ -223,6 +271,7 @@ namespace NActors::NTask {
             TTaskSystem* System;
             TActorId ExecutorActorId;
             bool DestroyOnDone;
+            std::shared_ptr<TTaskActorContextState> ActorContextState;
 
             TRunContext()
                 : System(nullptr)
@@ -231,20 +280,23 @@ namespace NActors::NTask {
             {
             }
 
-            TRunContext(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone)
+            TRunContext(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone,
+                    std::shared_ptr<TTaskActorContextState> actorContextState)
                 : System(system)
                 , ExecutorActorId(executorActorId)
                 , DestroyOnDone(destroyOnDone)
+                , ActorContextState(std::move(actorContextState))
             {
             }
         };
 
         class TRunContextGuard {
         public:
-            TRunContextGuard(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone)
+            TRunContextGuard(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone,
+                    std::shared_ptr<TTaskActorContextState> actorContextState)
                 : PrevContext_(CurrentRunContext_)
             {
-                CurrentRunContext_ = TRunContext(system, executorActorId, destroyOnDone);
+                CurrentRunContext_ = TRunContext(system, executorActorId, destroyOnDone, std::move(actorContextState));
             }
 
             TRunContextGuard(const TRunContextGuard&) = delete;
@@ -256,6 +308,25 @@ namespace NActors::NTask {
 
         private:
             TRunContext PrevContext_;
+        };
+
+        class TTlsActorContextGuard {
+        public:
+            explicit TTlsActorContextGuard(TActorContext& actorContext)
+                : PrevContext_(TlsActivationContext)
+            {
+                TlsActivationContext = &actorContext;
+            }
+
+            TTlsActorContextGuard(const TTlsActorContextGuard&) = delete;
+            TTlsActorContextGuard& operator=(const TTlsActorContextGuard&) = delete;
+
+            ~TTlsActorContextGuard() {
+                TlsActivationContext = PrevContext_;
+            }
+
+        private:
+            TActivationContext* PrevContext_ = nullptr;
         };
 
         static inline thread_local TRunContext CurrentRunContext_;
@@ -270,6 +341,10 @@ namespace NActors::NTask {
 
         static bool CurrentDestroyOnDone() noexcept {
             return CurrentRunContext_.DestroyOnDone;
+        }
+
+        static std::shared_ptr<TTaskActorContextState> CurrentTaskActorContextState() noexcept {
+            return CurrentRunContext_.ActorContextState;
         }
 
         TExecutor* FindExecutor(const TActorId& actorId) {
@@ -432,9 +507,78 @@ namespace NActors::NTask {
             return false;
         }
 
+        std::shared_ptr<TTaskActorContextState> GetOrCreateTaskActorContext(std::coroutine_handle<> handle) {
+            Y_ABORT_UNLESS(handle, "task handle must not be empty");
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            auto& entry = TaskActorContexts_[handle.address()];
+            if (entry.System) {
+                Y_ABORT_UNLESS(entry.System == this, "task actor context is bound to another task system");
+            } else {
+                entry.System = this;
+            }
+            if (!entry.State) {
+                entry.State = std::make_shared<TTaskActorContextState>();
+            }
+            return entry.State;
+        }
+
+        void BindTaskActorContext(std::coroutine_handle<> handle, std::shared_ptr<TTaskActorContextState> actorContextState) {
+            Y_ABORT_UNLESS(handle, "task handle must not be empty");
+            Y_ABORT_UNLESS(actorContextState, "task actor context state must not be empty");
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            auto& entry = TaskActorContexts_[handle.address()];
+            if (entry.System) {
+                Y_ABORT_UNLESS(entry.System == this, "task actor context is bound to another task system");
+            } else {
+                entry.System = this;
+            }
+            entry.State = std::move(actorContextState);
+        }
+
+        static void ReleaseTaskActorContext(std::coroutine_handle<> handle) noexcept {
+            if (!handle) {
+                return;
+            }
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            TaskActorContexts_.erase(handle.address());
+        }
+
+        static void OnTaskAwaitSuspend(std::coroutine_handle<> handle) noexcept {
+            TTaskSystem* system = CurrentTaskSystem();
+            if (!system || !handle) {
+                return;
+            }
+
+            auto actorContextState = CurrentTaskActorContextState();
+            if (!actorContextState) {
+                return;
+            }
+
+            system->BindTaskActorContext(handle, std::move(actorContextState));
+        }
+
+        static void OnTaskFinalSuspend(std::coroutine_handle<> handle) noexcept {
+            ReleaseTaskActorContext(handle);
+        }
+
+        static void OnTaskDestroy(std::coroutine_handle<> handle) noexcept {
+            ReleaseTaskActorContext(handle);
+        }
+
+        static void InstallTaskHooks() noexcept {
+            NDetail::TaskAwaitSuspendHook = &TTaskSystem::OnTaskAwaitSuspend;
+            NDetail::TaskFinalSuspendHook = &TTaskSystem::OnTaskFinalSuspend;
+            NDetail::TaskDestroyHook = &TTaskSystem::OnTaskDestroy;
+        }
+
     private:
         TActorSystem* ActorSystem_ = nullptr;
         TVector<TExecutor> Executors_;
+        static inline TMutex TaskActorContextsLock_;
+        static inline THashMap<void*, TTaskActorContextEntry> TaskActorContexts_;
     };
 
     namespace NDetail {

@@ -203,6 +203,32 @@ namespace {
         co_return;
     }
 
+    task<void> ChildReusesContextAfterWaitEvent(int& childDone) {
+        auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, queue.Cookie());
+
+        auto ev = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(queue);
+        UNIT_ASSERT(ev);
+
+        ++childDone;
+        co_return;
+    }
+
+    task<void> ParentReusesContextAfterAwaitedChild(int& parentDone, int& childDone) {
+        auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+
+        co_await ChildReusesContextAfterWaitEvent(childDone);
+
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, queue.Cookie());
+        auto ev = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(queue);
+        UNIT_ASSERT(ev);
+
+        ++parentDone;
+        co_return;
+    }
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(Task) {
@@ -330,6 +356,24 @@ Y_UNIT_TEST_SUITE(Task) {
         UNIT_ASSERT_VALUES_EQUAL(pingDone, 1);
         UNIT_ASSERT_VALUES_EQUAL(anyDone, 1);
         UNIT_ASSERT_VALUES_EQUAL(contextChecks, 2);
+    }
+
+    Y_UNIT_TEST(TaskActorContextSurvivesAwaitedChildTask) {
+        auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
+        runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
+        runtime->Initialize();
+
+        NActors::NTask::TTaskSystem sys;
+        sys.Initialize(runtime->GetAnyNodeActorSystem(), 1);
+
+        int parentDone = 0;
+        int childDone = 0;
+
+        sys.Enqueue(ParentReusesContextAfterAwaitedChild(parentDone, childDone));
+        runtime->DispatchEvents();
+
+        UNIT_ASSERT_VALUES_EQUAL(parentDone, 1);
+        UNIT_ASSERT_VALUES_EQUAL(childDone, 1);
     }
 
     Y_UNIT_TEST(ServiceMapSubSystemStoresByTemplateKeyValue) {
