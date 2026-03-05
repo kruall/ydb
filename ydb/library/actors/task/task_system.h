@@ -27,7 +27,7 @@ namespace NActors::NTask {
 
         class ITaskEventAwaiter {
         public:
-            virtual bool TryConsumeQueued(std::coroutine_handle<>& outContinuation) = 0;
+            virtual bool TryConsumeQueued(std::coroutine_handle<>& outContinuation, bool& outDestroyOnDone) = 0;
 
         protected:
             ~ITaskEventAwaiter() = default;
@@ -53,12 +53,14 @@ namespace NActors::NTask {
         static_assert(EvEnd < EventSpaceEnd(TEvents::ES_PRIVATE), "TTaskSystem private events overflow");
 
         struct TEvRunTask : public TEventLocal<TEvRunTask, EvRunTask> {
-            explicit TEvRunTask(std::coroutine_handle<> handle) noexcept
+            explicit TEvRunTask(std::coroutine_handle<> handle, bool destroyOnDone = true) noexcept
                 : Handle(handle)
+                , DestroyOnDone(destroyOnDone)
             {
             }
 
             std::coroutine_handle<> Handle;
+            bool DestroyOnDone = true;
         };
 
         TTaskSystem() = default;
@@ -87,7 +89,7 @@ namespace NActors::NTask {
         void Enqueue(std::coroutine_handle<> handle) {
             Y_ASSERT(handle);
             Y_ABORT_UNLESS(IsInitialized(), "TTaskSystem must be initialized before Enqueue");
-            TriggerRandomExecutor(handle);
+            TriggerRandomExecutor(handle, true);
         }
 
         template<class T>
@@ -179,13 +181,13 @@ namespace NActors::NTask {
         template<class TEvent>
         friend class NDetail::TTaskEventAwaiter;
 
-        void RunTask(std::coroutine_handle<> handle, const TActorId& executorActorId) {
+        void RunTask(std::coroutine_handle<> handle, const TActorId& executorActorId, bool destroyOnDone) {
             Y_ABORT_UNLESS(IsExecutorActor(executorActorId), "TTaskSystem tasks must run only in task executor actors");
 
-            const TRunContextGuard contextGuard(this, executorActorId);
+            const TRunContextGuard contextGuard(this, executorActorId, destroyOnDone);
             handle.resume();
 
-            if (handle.done()) {
+            if (destroyOnDone && handle.done()) {
                 handle.destroy();
             }
         }
@@ -195,9 +197,10 @@ namespace NActors::NTask {
             const ui64 cookie = ev->Cookie;
             if (StoreEventInQueue(executor, cookie, ev)) {
                 std::coroutine_handle<> continuation;
-                if (TryConsumeQueuedEvent(executor, cookie, continuation)) {
+                bool destroyOnDone = false;
+                if (TryConsumeQueuedEvent(executor, cookie, continuation, destroyOnDone)) {
                     Y_ABORT_UNLESS(continuation, "WaitEvent continuation is not set");
-                    RunTask(continuation, executorActorId);
+                    RunTask(continuation, executorActorId, destroyOnDone);
                 }
                 return true;
             }
@@ -219,26 +222,29 @@ namespace NActors::NTask {
         struct TRunContext {
             TTaskSystem* System;
             TActorId ExecutorActorId;
+            bool DestroyOnDone;
 
             TRunContext()
                 : System(nullptr)
                 , ExecutorActorId()
+                , DestroyOnDone(false)
             {
             }
 
-            TRunContext(TTaskSystem* system, const TActorId& executorActorId)
+            TRunContext(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone)
                 : System(system)
                 , ExecutorActorId(executorActorId)
+                , DestroyOnDone(destroyOnDone)
             {
             }
         };
 
         class TRunContextGuard {
         public:
-            TRunContextGuard(TTaskSystem* system, const TActorId& executorActorId)
+            TRunContextGuard(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone)
                 : PrevContext_(CurrentRunContext_)
             {
-                CurrentRunContext_ = TRunContext(system, executorActorId);
+                CurrentRunContext_ = TRunContext(system, executorActorId, destroyOnDone);
             }
 
             TRunContextGuard(const TRunContextGuard&) = delete;
@@ -260,6 +266,10 @@ namespace NActors::NTask {
 
         static TActorId CurrentExecutorActorId() noexcept {
             return CurrentRunContext_.ExecutorActorId;
+        }
+
+        static bool CurrentDestroyOnDone() noexcept {
+            return CurrentRunContext_.DestroyOnDone;
         }
 
         TExecutor* FindExecutor(const TActorId& actorId) {
@@ -375,14 +385,15 @@ namespace NActors::NTask {
             return true;
         }
 
-        bool TryConsumeQueuedEvent(TExecutor* executor, ui64 cookie, std::coroutine_handle<>& outContinuation) {
+        bool TryConsumeQueuedEvent(TExecutor* executor, ui64 cookie,
+                std::coroutine_handle<>& outContinuation, bool& outDestroyOnDone) {
             auto it = executor->EventAwaiters.find(cookie);
             if (it == executor->EventAwaiters.end()) {
                 return false;
             }
             const auto awaiters = it->second;
             for (auto* awaiter : awaiters) {
-                if (awaiter->TryConsumeQueued(outContinuation)) {
+                if (awaiter->TryConsumeQueued(outContinuation, outDestroyOnDone)) {
                     return true;
                 }
             }
@@ -403,13 +414,13 @@ namespace NActors::NTask {
             return RandomNumber<ui32>(Executors_.size());
         }
 
-        void TriggerExecutor(ui32 idx, std::coroutine_handle<> handle) {
+        void TriggerExecutor(ui32 idx, std::coroutine_handle<> handle, bool destroyOnDone) {
             Y_ASSERT(idx < Executors_.size());
-            ActorSystem_->Send(Executors_[idx].ActorId, new TEvRunTask(handle));
+            ActorSystem_->Send(Executors_[idx].ActorId, new TEvRunTask(handle, destroyOnDone));
         }
 
-        void TriggerRandomExecutor(std::coroutine_handle<> handle) {
-            TriggerExecutor(ChooseExecutor(), handle);
+        void TriggerRandomExecutor(std::coroutine_handle<> handle, bool destroyOnDone) {
+            TriggerExecutor(ChooseExecutor(), handle, destroyOnDone);
         }
 
         bool IsExecutorActor(const TActorId& actorId) const {
@@ -435,6 +446,7 @@ namespace NActors::NTask {
                 : Cookie(queue.Cookie())
                 , System(queue.System())
                 , ExecutorActorId(queue.ExecutorActorId())
+                , DestroyOnDone(TTaskSystem::CurrentDestroyOnDone())
             {
             }
 
@@ -466,10 +478,11 @@ namespace NActors::NTask {
                 return std::move(Result);
             }
 
-            bool TryConsumeQueued(std::coroutine_handle<>& outContinuation) override {
+            bool TryConsumeQueued(std::coroutine_handle<>& outContinuation, bool& outDestroyOnDone) override {
                 Y_ABORT_UNLESS(System, "Unexpected TryConsumeQueued call after awaiter detach");
                 if (TryTakeQueuedEvent()) {
                     outContinuation = Continuation;
+                    outDestroyOnDone = DestroyOnDone;
                     Detach();
                     return true;
                 }
@@ -504,6 +517,7 @@ namespace NActors::NTask {
             typename TEvent::TPtr Result;
             TTaskSystem* System = nullptr;
             TActorId ExecutorActorId;
+            bool DestroyOnDone = false;
             bool Registered = false;
             std::coroutine_handle<> Continuation;
         };

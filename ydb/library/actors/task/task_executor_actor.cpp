@@ -26,7 +26,7 @@ namespace NActors::NTask {
     private:
         void HandleRunTask(TTaskSystem::TEvRunTask::TPtr& ev, const TActorContext& ctx) {
             auto handle = ev->Get()->Handle;
-            System_->RunTask(handle, ctx.SelfID);
+            System_->RunTask(handle, ctx.SelfID, ev->Get()->DestroyOnDone);
         }
 
         void HandlePoisonPill(TEvents::TEvPoisonPill::TPtr&, const TActorContext& ctx) {
