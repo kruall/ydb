@@ -223,6 +223,7 @@ namespace NActors::NTask {
             TTaskSystem* System = nullptr;
             std::shared_ptr<TTaskActorContextState> State;
             bool DestroyOnDone = false;
+            std::coroutine_handle<> OwnerHandle;
         };
 
         void RunTask(std::coroutine_handle<> handle, const TActorId& executorActorId, bool destroyOnDone) {
@@ -232,13 +233,16 @@ namespace NActors::NTask {
             const auto& actorContext = TActivationContext::AsActorContext();
             actorContextState->Refresh(actorContext);
             SetTaskDestroyOnDone(handle, destroyOnDone);
+            const auto ownerHandle = GetTaskOwnerHandle(handle);
 
-            const TRunContextGuard contextGuard(this, executorActorId, destroyOnDone, actorContextState);
+            const TRunContextGuard contextGuard(this, executorActorId, destroyOnDone, actorContextState, ownerHandle);
             const TTlsActorContextGuard tlsActorContextGuard(*actorContextState->Get());
             handle.resume();
 
             if (destroyOnDone && handle.done()) {
                 handle.destroy();
+            } else if (ownerHandle && ownerHandle.address() != handle.address() && ownerHandle.done()) {
+                ownerHandle.destroy();
             }
         }
 
@@ -274,6 +278,7 @@ namespace NActors::NTask {
             TActorId ExecutorActorId;
             bool DestroyOnDone;
             std::shared_ptr<TTaskActorContextState> ActorContextState;
+            std::coroutine_handle<> OwnerHandle;
 
             TRunContext()
                 : System(nullptr)
@@ -283,11 +288,13 @@ namespace NActors::NTask {
             }
 
             TRunContext(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone,
-                    std::shared_ptr<TTaskActorContextState> actorContextState)
+                    std::shared_ptr<TTaskActorContextState> actorContextState,
+                    std::coroutine_handle<> ownerHandle)
                 : System(system)
                 , ExecutorActorId(executorActorId)
                 , DestroyOnDone(destroyOnDone)
                 , ActorContextState(std::move(actorContextState))
+                , OwnerHandle(ownerHandle)
             {
             }
         };
@@ -295,10 +302,11 @@ namespace NActors::NTask {
         class TRunContextGuard {
         public:
             TRunContextGuard(TTaskSystem* system, const TActorId& executorActorId, bool destroyOnDone,
-                    std::shared_ptr<TTaskActorContextState> actorContextState)
+                    std::shared_ptr<TTaskActorContextState> actorContextState,
+                    std::coroutine_handle<> ownerHandle)
                 : PrevContext_(CurrentRunContext_)
             {
-                CurrentRunContext_ = TRunContext(system, executorActorId, destroyOnDone, std::move(actorContextState));
+                CurrentRunContext_ = TRunContext(system, executorActorId, destroyOnDone, std::move(actorContextState), ownerHandle);
             }
 
             TRunContextGuard(const TRunContextGuard&) = delete;
@@ -347,6 +355,10 @@ namespace NActors::NTask {
 
         static std::shared_ptr<TTaskActorContextState> CurrentTaskActorContextState() noexcept {
             return CurrentRunContext_.ActorContextState;
+        }
+
+        static std::coroutine_handle<> CurrentOwnerHandle() noexcept {
+            return CurrentRunContext_.OwnerHandle;
         }
 
         TExecutor* FindExecutor(const TActorId& actorId) {
@@ -552,6 +564,9 @@ namespace NActors::NTask {
                 entry.System = this;
             }
             entry.DestroyOnDone = destroyOnDone;
+            if (!entry.OwnerHandle) {
+                entry.OwnerHandle = handle;
+            }
         }
 
         bool GetTaskDestroyOnDone(std::coroutine_handle<> handle) const {
@@ -564,6 +579,33 @@ namespace NActors::NTask {
             Y_ABORT_UNLESS(!it->second.System || it->second.System == this,
                 "task destroy policy is bound to another task system");
             return it->second.DestroyOnDone;
+        }
+
+        void SetTaskOwnerHandle(std::coroutine_handle<> handle, std::coroutine_handle<> ownerHandle) {
+            Y_ABORT_UNLESS(handle, "task handle must not be empty");
+            Y_ABORT_UNLESS(ownerHandle, "task owner handle must not be empty");
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            auto& entry = TaskActorContexts_[handle.address()];
+            if (entry.System) {
+                Y_ABORT_UNLESS(entry.System == this, "task actor context is bound to another task system");
+            } else {
+                entry.System = this;
+            }
+            entry.OwnerHandle = ownerHandle;
+        }
+
+        std::coroutine_handle<> GetTaskOwnerHandle(std::coroutine_handle<> handle) const {
+            Y_ABORT_UNLESS(handle, "task handle must not be empty");
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            auto it = TaskActorContexts_.find(handle.address());
+            Y_ABORT_UNLESS(it != TaskActorContexts_.end(),
+                "task owner handle is not registered for this coroutine handle");
+            Y_ABORT_UNLESS(!it->second.System || it->second.System == this,
+                "task owner handle is bound to another task system");
+            Y_ABORT_UNLESS(it->second.OwnerHandle, "task owner handle is empty");
+            return it->second.OwnerHandle;
         }
 
         static void ReleaseTaskActorContext(std::coroutine_handle<> handle) noexcept {
@@ -587,6 +629,9 @@ namespace NActors::NTask {
             }
 
             system->BindTaskActorContext(handle, std::move(actorContextState), false);
+            if (auto ownerHandle = CurrentOwnerHandle()) {
+                system->SetTaskOwnerHandle(handle, ownerHandle);
+            }
         }
 
         static void OnTaskFinalSuspend(std::coroutine_handle<> handle) noexcept {
