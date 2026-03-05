@@ -1478,11 +1478,31 @@ public:
 namespace NPrivate {
 
 NActors::NTask::task<void> RunReadV2TaskOrCreateActor(std::unique_ptr<IRequestNoOpCtx> request,
-        TKeyValueRequestSettings settings, TReadV2TaskArgs args)
+        TKeyValueRequestSettings settings)
 {
     if (!request) {
         co_return;
     }
+
+    const auto* protoRequest = dynamic_cast<const Ydb::KeyValue::ReadRequest*>(request->GetRequest());
+    if (!protoRequest) {
+        NActors::TActivationContext::AsActorContext().Register(new TReadRequest<false>(request.release(), settings));
+        co_return;
+    }
+
+    TReadV2TaskArgs args;
+    if (const auto databaseName = request->GetDatabaseName()) {
+        args.Database = *databaseName;
+    }
+    args.Path = protoRequest->path();
+    args.PartitionId = protoRequest->partition_id();
+    const TString& serializedToken = request->GetSerializedToken();
+    if (!serializedToken.empty()) {
+        args.UserToken = new NACLib::TUserToken(serializedToken);
+    }
+    CopyProtobuf(*protoRequest, &args.Request);
+    args.TraceId = request->GetWilsonTraceId();
+    args.UsePayloadInResponse = settings.UseCustomSerialization;
 
     bool needFallback = true;
     std::unique_ptr<TEvKeyValue::TEvReadResponse> response;
@@ -1684,27 +1704,7 @@ void DoReadKeyValueV2(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvide
         return;
     }
 
-    const auto* protoRequest = dynamic_cast<const Ydb::KeyValue::ReadRequest*>(p->GetRequest());
-    if (!protoRequest) {
-        TActivationContext::AsActorContext().Register(new TReadRequest<false>(p.release(), settings));
-        return;
-    }
-
-    NPrivate::TReadV2TaskArgs taskArgs;
-    if (const auto databaseName = p->GetDatabaseName()) {
-        taskArgs.Database = *databaseName;
-    }
-    taskArgs.Path = protoRequest->path();
-    taskArgs.PartitionId = protoRequest->partition_id();
-    const TString& serializedToken = p->GetSerializedToken();
-    if (!serializedToken.empty()) {
-        taskArgs.UserToken = new NACLib::TUserToken(serializedToken);
-    }
-    CopyProtobuf(*protoRequest, &taskArgs.Request);
-    taskArgs.TraceId = p->GetWilsonTraceId();
-    taskArgs.UsePayloadInResponse = settings.UseCustomSerialization;
-
-    taskSystem->Enqueue(NPrivate::RunReadV2TaskOrCreateActor(std::move(p), settings, std::move(taskArgs)));
+    taskSystem->Enqueue(NPrivate::RunReadV2TaskOrCreateActor(std::move(p), settings));
 }
 
 void DoReadRangeKeyValue(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&, const TKeyValueRequestSettings& settings) {
