@@ -180,9 +180,9 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
             Y_ABORT_UNLESS(ev);
             TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
             if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVGetResult::EventType) {
-                TEvBlobStorage::TEvVGetResult::TPtr vGetEv(static_cast<TEvBlobStorage::TEvVGetResult*>(ev->ReleaseBase().Release()), ev->ReleaseType());
-                Y_ABORT_UNLESS(vGetEv);
-                const auto& record = vGetEv->Get()->Record;
+                auto vGet = ev->Release<TEvBlobStorage::TEvVGetResult>();
+                Y_ABORT_UNLESS(vGet);
+                const auto& record = vGet->Record;
                 Y_ABORT_UNLESS(record.HasStatus());
 
                 const NKikimrProto::EReplyStatus status = record.GetStatus();
@@ -198,11 +198,11 @@ namespace NKikimr::NBlobStorage::NDSProxy::NTask {
                     co_return MakeErrorResultFromRequest(*request, args, status, "terminal status from VGetResult");
                 }
 
-                getImpl.OnVGetResult(logCtx, *vGetEv->Get(), vGets, vPuts, getResult);
+                getImpl.OnVGetResult(logCtx, *vGet, vGets, vPuts, getResult);
             } else if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVPutResult::EventType) {
-                TEvBlobStorage::TEvVPutResult::TPtr vPutEv(static_cast<TEvBlobStorage::TEvVPutResult*>(ev->ReleaseBase().Release()), ev->ReleaseType());
-                Y_ABORT_UNLESS(vPutEv);
-                getImpl.OnVPutResult(logCtx, *vPutEv->Get(), vGets, vPuts, getResult);
+                auto vPut = ev->Release<TEvBlobStorage::TEvVPutResult>();
+                Y_ABORT_UNLESS(vPut);
+                getImpl.OnVPutResult(logCtx, *vPut, vGets, vPuts, getResult);
             } else {
                 Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
             }
