@@ -131,6 +131,9 @@ namespace NActors {
     async<T> Execute(NTask::task<T>&& task) {
         TActorSystem* actorSystem = TActivationContext::ActorSystem();
         NTask::TTaskSystem* taskSystem = actorSystem ? actorSystem->GetSubSystem<NTask::TTaskSystem>() : nullptr;
+        if (taskSystem && !taskSystem->IsInitialized()) {
+            taskSystem = nullptr;
+        }
         if constexpr (std::is_void_v<T>) {
             co_await NDetail::TExecuteTaskAwaiter<T>(std::move(task), taskSystem);
             co_return;

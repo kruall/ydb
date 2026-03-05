@@ -4,6 +4,7 @@
 #include <ydb/core/protos/bootstrap.pb.h>
 #include <ydb/core/protos/resource_broker.pb.h>
 
+#include <ydb/library/actors/core/actor_bootstrapped.h>
 #include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/task/task_system.h>
 #include <ydb/library/actors/util/affinity.h>
@@ -14,6 +15,32 @@ namespace NKikimr {
 namespace NActorSystemConfigHelpers {
 
 namespace {
+
+class TTaskSystemInitializerActor final : public NActors::TActorBootstrapped<TTaskSystemInitializerActor> {
+public:
+    TTaskSystemInitializerActor(ui32 executorCount, ui32 poolId)
+        : ExecutorCount(executorCount)
+        , PoolId(poolId)
+    {}
+
+    void Bootstrap() {
+        auto* actorSystem = NActors::TActivationContext::ActorSystem();
+        Y_ABORT_UNLESS(actorSystem);
+
+        auto* taskSystem = actorSystem->GetSubSystem<NActors::NTask::TTaskSystem>();
+        Y_ABORT_UNLESS(taskSystem);
+
+        if (!taskSystem->IsInitialized()) {
+            taskSystem->Initialize(actorSystem, ExecutorCount, PoolId);
+        }
+
+        PassAway();
+    }
+
+private:
+    ui32 ExecutorCount = 0;
+    ui32 PoolId = 0;
+};
 
 template <class TConfig>
 static TCpuMask ParseAffinity(const TConfig& cfg) {
@@ -146,11 +173,16 @@ void AddTaskSystemForUserPool(NActors::TActorSystemSetup& setup, ui32 userPoolId
 
     Y_ABORT_UNLESS(maxThreads > 0, "Cannot determine max threads for User pool %u", static_cast<unsigned>(userPoolId));
 
-    setup.AfterCreateCallbacks.emplace_back([maxThreads, userPoolId](NActors::TActorSystem& actorSystem) {
-        auto taskSystem = std::make_unique<NActors::NTask::TTaskSystem>();
-        taskSystem->Initialize(&actorSystem, maxThreads, userPoolId);
-        actorSystem.RegisterSubSystem(std::move(taskSystem));
+    setup.AfterCreateCallbacks.emplace_back([](NActors::TActorSystem& actorSystem) {
+        actorSystem.RegisterSubSystem(std::make_unique<NActors::NTask::TTaskSystem>());
     });
+
+    setup.LocalServices.emplace_back(
+        NActors::TActorId(),
+        NActors::TActorSetupCmd(
+            new TTaskSystemInitializerActor(maxThreads, userPoolId),
+            NActors::TMailboxType::HTSwap,
+            userPoolId));
 }
 
 }  // namespace NActorSystemConfigHelpers
