@@ -222,6 +222,7 @@ namespace NActors::NTask {
         struct TTaskActorContextEntry {
             TTaskSystem* System = nullptr;
             std::shared_ptr<TTaskActorContextState> State;
+            bool DestroyOnDone = false;
         };
 
         void RunTask(std::coroutine_handle<> handle, const TActorId& executorActorId, bool destroyOnDone) {
@@ -230,6 +231,7 @@ namespace NActors::NTask {
             auto actorContextState = GetOrCreateTaskActorContext(handle);
             const auto& actorContext = TActivationContext::AsActorContext();
             actorContextState->Refresh(actorContext);
+            SetTaskDestroyOnDone(handle, destroyOnDone);
 
             const TRunContextGuard contextGuard(this, executorActorId, destroyOnDone, actorContextState);
             const TTlsActorContextGuard tlsActorContextGuard(*actorContextState->Get());
@@ -523,7 +525,8 @@ namespace NActors::NTask {
             return entry.State;
         }
 
-        void BindTaskActorContext(std::coroutine_handle<> handle, std::shared_ptr<TTaskActorContextState> actorContextState) {
+        void BindTaskActorContext(std::coroutine_handle<> handle, std::shared_ptr<TTaskActorContextState> actorContextState,
+                bool destroyOnDone) {
             Y_ABORT_UNLESS(handle, "task handle must not be empty");
             Y_ABORT_UNLESS(actorContextState, "task actor context state must not be empty");
 
@@ -535,6 +538,32 @@ namespace NActors::NTask {
                 entry.System = this;
             }
             entry.State = std::move(actorContextState);
+            entry.DestroyOnDone = destroyOnDone;
+        }
+
+        void SetTaskDestroyOnDone(std::coroutine_handle<> handle, bool destroyOnDone) {
+            Y_ABORT_UNLESS(handle, "task handle must not be empty");
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            auto& entry = TaskActorContexts_[handle.address()];
+            if (entry.System) {
+                Y_ABORT_UNLESS(entry.System == this, "task actor context is bound to another task system");
+            } else {
+                entry.System = this;
+            }
+            entry.DestroyOnDone = destroyOnDone;
+        }
+
+        bool GetTaskDestroyOnDone(std::coroutine_handle<> handle) const {
+            Y_ABORT_UNLESS(handle, "task handle must not be empty");
+
+            TGuard<TMutex> guard(TaskActorContextsLock_);
+            auto it = TaskActorContexts_.find(handle.address());
+            Y_ABORT_UNLESS(it != TaskActorContexts_.end(),
+                "task destroy policy is not registered for this coroutine handle");
+            Y_ABORT_UNLESS(!it->second.System || it->second.System == this,
+                "task destroy policy is bound to another task system");
+            return it->second.DestroyOnDone;
         }
 
         static void ReleaseTaskActorContext(std::coroutine_handle<> handle) noexcept {
@@ -557,7 +586,7 @@ namespace NActors::NTask {
                 return;
             }
 
-            system->BindTaskActorContext(handle, std::move(actorContextState));
+            system->BindTaskActorContext(handle, std::move(actorContextState), false);
         }
 
         static void OnTaskFinalSuspend(std::coroutine_handle<> handle) noexcept {
@@ -590,7 +619,6 @@ namespace NActors::NTask {
                 : Cookie(queue.Cookie())
                 , System(queue.System())
                 , ExecutorActorId(queue.ExecutorActorId())
-                , DestroyOnDone(TTaskSystem::CurrentDestroyOnDone())
             {
             }
 
@@ -609,6 +637,7 @@ namespace NActors::NTask {
             bool await_suspend(std::coroutine_handle<> continuation) {
                 ValidateContext();
                 Continuation = continuation;
+                DestroyOnDone = System->GetTaskDestroyOnDone(continuation);
                 System->RegisterEventAwaiter(ExecutorActorId, Cookie, this);
                 Registered = true;
                 if (TryTakeQueuedEvent()) {
