@@ -81,6 +81,7 @@ namespace NActors {
 
         void AddAppDataInit(std::function<void(ui32, NKikimr::TAppData&)> callback);
         void AddActorSystemInit(std::function<void(ui32, TActorSystem&)> callback);
+        void AddActorSystemStarted(std::function<void(ui32, TActorSystem&)> callback);
         virtual void Initialize(TEgg);
         void SetupStatsCollectors();
         void SetupActorSystemConfig(const TActorSystemSetupConfig& config, const TActorSystemPools& pools);
@@ -151,6 +152,7 @@ namespace NActors {
         TVector<ui16> MonPorts;
         TVector<std::function<void(ui32, NKikimr::TAppData&)>> AppDataInit_;
         TVector<std::function<void(ui32, TActorSystem&)>> ActorSystemInit_;
+        TVector<std::function<void(ui32, TActorSystem&)>> ActorSystemStarted_;
         bool NeedStatsCollectors = false;
         std::optional<TActorSystemSetupConfig> ActorSystemSetupConfig;
         TActorSystemPools ActorSystemPools;

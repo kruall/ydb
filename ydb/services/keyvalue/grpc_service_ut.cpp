@@ -161,10 +161,7 @@ namespace {
 
                 runtime.AddActorSystemInit([](ui32, NActors::TActorSystem& actorSystem) {
                     if (!actorSystem.GetSubSystem<NActors::NTask::TTaskSystem>()) {
-                        auto taskSystem = std::make_unique<NActors::NTask::TTaskSystem>();
-                        const ui32 userPoolId = NKikimr::AppData(&actorSystem)->UserPoolId;
-                        taskSystem->Initialize(&actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors, userPoolId);
-                        actorSystem.RegisterSubSystem(std::move(taskSystem));
+                        actorSystem.RegisterSubSystem(std::make_unique<NActors::NTask::TTaskSystem>());
                     }
 
                     if (!actorSystem.GetSubSystem<NKeyValue::NTask::TReadSharedSnapshotSubSystem>()) {
@@ -173,6 +170,15 @@ namespace {
 
                     if (!actorSystem.GetSubSystem<TKeyValueResolveSubSystem>()) {
                         actorSystem.RegisterSubSystem(std::make_unique<TKeyValueResolveSubSystem>());
+                    }
+                });
+
+                runtime.AddActorSystemStarted([](ui32, NActors::TActorSystem& actorSystem) {
+                    auto* taskSystem = actorSystem.GetSubSystem<NActors::NTask::TTaskSystem>();
+                    UNIT_ASSERT(taskSystem);
+                    if (!taskSystem->IsInitialized()) {
+                        const ui32 userPoolId = NKikimr::AppData(&actorSystem)->UserPoolId;
+                        taskSystem->Initialize(&actorSystem, NActors::NTask::TTaskSystem::DefaultExecutors, userPoolId);
                     }
                 });
             });

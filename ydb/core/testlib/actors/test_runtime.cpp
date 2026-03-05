@@ -127,6 +127,11 @@ namespace NActors {
         ActorSystemInit_.push_back(std::move(callback));
     }
 
+    void TTestActorRuntime::AddActorSystemStarted(std::function<void(ui32, TActorSystem&)> callback) {
+        Y_ABORT_UNLESS(!IsInitialized, "Actor system is already initialized");
+        ActorSystemStarted_.push_back(std::move(callback));
+    }
+
     void TTestActorRuntime::AddAuditLogStuff() {
         for (ui32 nodeIndex = 0; nodeIndex < GetNodeCount(); ++nodeIndex) {
             AddLocalService(
@@ -258,6 +263,10 @@ namespace NActors {
 
             StartActorSystem(nodeIndex, node);
 
+            for (auto& callback : ActorSystemStarted_) {
+                callback(nodeIndex, *node->ActorSystem);
+            }
+
             if (nodeAppData->Mon) {
                 nodeAppData->Mon->Start(node->ActorSystem.Get());
             }
@@ -265,6 +274,7 @@ namespace NActors {
 
         AppDataInit_.clear();
         ActorSystemInit_.clear();
+        ActorSystemStarted_.clear();
     }
 
     ui16 TTestActorRuntime::GetMonPort(ui32 nodeIndex) const {
