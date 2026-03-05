@@ -50,6 +50,7 @@ PEERDIR(
     ydb/library/actors/task
     ydb/core/base
     ydb/core/blobstorage/base
+    ydb/core/blobstorage/dsproxy/task
     ydb/core/engine/minikql
     ydb/core/keyvalue/protos
     ydb/core/protos

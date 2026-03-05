@@ -2,7 +2,7 @@
 #include "keyvalue_const.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/services/blobstorage_service_id.h>
+#include <ydb/core/blobstorage/dsproxy/task/read.h>
 #include <ydb/library/actors/task/task_system.h>
 
 #include <util/generic/algorithm.h>
@@ -172,7 +172,6 @@ struct TReadItemInfo {
 struct TGetBatch {
     TStackVec<ui32, 1> ReadItemIndecies;
     ui32 GroupId = 0;
-    bool Done = false;
 };
 
 } // namespace
@@ -279,9 +278,9 @@ NActors::NTask::task<TReadTaskResult> RunReadTask(TReadTaskArgs args) {
     }
 
     if (!readItems.empty()) {
-        THashMap<ui32, ui32> mapFromGroupToBatch;
         TStackVec<TGetBatch, 1> batches;
         batches.reserve(readItems.size());
+        THashMap<ui32, ui32> mapFromGroupToBatch;
 
         for (ui32 readItemIdx = 0; readItemIdx < readItems.size(); ++readItemIdx) {
             auto& readItem = *readItems[readItemIdx].ReadItem;
@@ -301,7 +300,6 @@ NActors::NTask::task<TReadTaskResult> RunReadTask(TReadTaskArgs args) {
             batches[batchIt->second].ReadItemIndecies.push_back(readItemIdx);
         }
 
-        auto queue = NActors::NTask::TTaskSystem::CreateEventQueue();
         auto& ctx = NActors::TActivationContext::AsActorContext();
         for (auto& batch : batches) {
             TArrayHolder<TEvBlobStorage::TEvGet::TQuery> readQueries(
@@ -320,23 +318,14 @@ NActors::NTask::task<TReadTaskResult> RunReadTask(TReadTaskArgs args) {
                 response.HandleClass,
                 false);
             ev->ReaderTabletData = {snapshot->TabletId, static_cast<ui32>(snapshot->ChannelGeneration)};
-            ctx.Send(MakeBlobStorageProxyID(batch.GroupId), ev.release(), 0, queue.Cookie());
-        }
 
-        ui32 received = 0;
-        while (received < batches.size()) {
-            auto ev = co_await NActors::NTask::WaitEvent<TEvBlobStorage::TEvGetResult>(queue);
-            if (!ev) {
+            NBlobStorage::NDSProxy::NTask::TReadTaskArgs dsProxyTaskArgs;
+            dsProxyTaskArgs.GroupId = batch.GroupId;
+            dsProxyTaskArgs.Request.Event = std::move(ev);
+            dsProxyTaskArgs.Request.Source = ctx.SelfID;
+            auto result = co_await NBlobStorage::NDSProxy::NTask::RunReadTask(std::move(dsProxyTaskArgs));
+            if (!result) {
                 co_return out;
-            }
-            auto* result = ev->Get();
-            const auto batchIt = mapFromGroupToBatch.find(result->GroupId);
-            if (batchIt == mapFromGroupToBatch.end()) {
-                co_return out;
-            }
-            auto& batch = batches[batchIt->second];
-            if (batch.Done) {
-                continue;
             }
             if (result->Status != NKikimrProto::OK || result->ResponseSz != batch.ReadItemIndecies.size()) {
                 co_return out;
@@ -365,9 +354,6 @@ NActors::NTask::task<TReadTaskResult> RunReadTask(TReadTaskArgs args) {
 
                 read.Value.Write(readItem.ValueOffset, std::move(itemResponse.Buffer));
             }
-
-            batch.Done = true;
-            ++received;
         }
     }
 
