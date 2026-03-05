@@ -148,6 +148,61 @@ namespace {
         co_return;
     }
 
+    task<void> WaitPingOnSharedQueue(NActors::NTask::TTaskSystem::TEventQueue& queue, int& out, ui64 doneCookie) {
+        auto ev = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvPing>(queue);
+        UNIT_ASSERT(ev);
+
+        ++out;
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, doneCookie);
+        co_return;
+    }
+
+    task<void> WaitAnyOnSharedQueue(NActors::NTask::TTaskSystem::TEventQueue& queue,
+            int& out, int& contextChecks, ui64 doneCookie) {
+        auto ev = co_await NActors::NTask::WaitEvent<NActors::IEventHandle>(queue);
+        UNIT_ASSERT(ev);
+        ++out;
+
+        auto contextQueue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        ++contextChecks;
+        const ui64 contextCookie = contextQueue.Cookie();
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, contextCookie);
+        auto contextEv = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(contextQueue);
+        UNIT_ASSERT(contextEv);
+        ++contextChecks;
+
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, doneCookie);
+        co_return;
+    }
+
+    task<void> SendWakeupThenPing(ui64 cookie) {
+        const auto& ctx = NActors::TActivationContext::AsActorContext();
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvWakeup, 0, cookie);
+        ctx.Send(ctx.SelfID, new NActors::TEvents::TEvPing, 0, cookie);
+        co_return;
+    }
+
+    task<void> WaitSharedCookieAwaiters(int& pingDone, int& anyDone, int& contextChecks) {
+        auto dataQueue = NActors::NTask::TTaskSystem::CreateEventQueue();
+        auto doneQueue = NActors::NTask::TTaskSystem::CreateEventQueue();
+
+        const ui64 dataCookie = dataQueue.Cookie();
+        const ui64 doneCookie = doneQueue.Cookie();
+
+        auto* system = dataQueue.System();
+        system->Enqueue(WaitPingOnSharedQueue(dataQueue, pingDone, doneCookie));
+        system->Enqueue(WaitAnyOnSharedQueue(dataQueue, anyDone, contextChecks, doneCookie));
+        system->Enqueue(SendWakeupThenPing(dataCookie));
+
+        auto done1 = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(doneQueue);
+        UNIT_ASSERT(done1);
+        auto done2 = co_await NActors::NTask::WaitEvent<NActors::TEvents::TEvWakeup>(doneQueue);
+        UNIT_ASSERT(done2);
+        co_return;
+    }
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(Task) {
@@ -255,6 +310,26 @@ Y_UNIT_TEST_SUITE(Task) {
 
         runtime->DispatchEvents();
         UNIT_ASSERT_VALUES_EQUAL(out, 2);
+    }
+
+    Y_UNIT_TEST(TaskWaitEventSharedCookieAwaitersInExecutorActor) {
+        auto runtime = MakeHolder<NActors::TTestActorRuntimeBase>();
+        runtime->SetScheduledEventFilter([](auto&&, auto&&, auto&&, auto&&) { return false; });
+        runtime->Initialize();
+
+        NActors::NTask::TTaskSystem sys;
+        sys.Initialize(runtime->GetAnyNodeActorSystem(), 1);
+
+        int pingDone = 0;
+        int anyDone = 0;
+        int contextChecks = 0;
+
+        sys.Enqueue(WaitSharedCookieAwaiters(pingDone, anyDone, contextChecks));
+        runtime->DispatchEvents();
+
+        UNIT_ASSERT_VALUES_EQUAL(pingDone, 1);
+        UNIT_ASSERT_VALUES_EQUAL(anyDone, 1);
+        UNIT_ASSERT_VALUES_EQUAL(contextChecks, 2);
     }
 
     Y_UNIT_TEST(ServiceMapSubSystemStoresByTemplateKeyValue) {
