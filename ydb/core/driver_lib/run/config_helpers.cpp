@@ -48,9 +48,40 @@ NActors::EASProfile ConvertActorSystemProfile(NKikimrConfig::TActorSystemConfig:
     }
 }
 
+bool IsTinySharedConfiguration(const NKikimrConfig::TActorSystemConfig& systemConfig) {
+    if (!systemConfig.HasUseSharedThreads() || !systemConfig.GetUseSharedThreads()) {
+        return false;
+    }
+
+    ui32 basicPoolCount = 0;
+    ui32 totalBasicThreads = 0;
+    for (const auto& executor : systemConfig.GetExecutor()) {
+        if (executor.GetType() != NKikimrConfig::TActorSystemConfig::TExecutor::BASIC) {
+            continue;
+        }
+        ++basicPoolCount;
+        totalBasicThreads += executor.GetThreads();
+    }
+
+    return basicPoolCount > totalBasicThreads;
+}
+
+NActors::EHarmonizerPoolKind InferHarmonizerPoolKind(const NActors::TBasicExecutorPoolConfig& cfg, bool isTinySharedConfiguration) {
+    if (isTinySharedConfiguration) {
+        return cfg.HasSharedThread
+            ? NActors::EHarmonizerPoolKind::OwnedSharedOnly
+            : NActors::EHarmonizerPoolKind::ForeignSharedOnly;
+    }
+
+    return cfg.HasSharedThread
+        ? NActors::EHarmonizerPoolKind::RegularWithOwnedShared
+        : NActors::EHarmonizerPoolKind::Regular;
+}
+
 }  // anonymous namespace
 
 void AddExecutorPool(NActors::TCpuManagerConfig& cpuManager, const NKikimrConfig::TActorSystemConfig::TExecutor& poolConfig, const NKikimrConfig::TActorSystemConfig& systemConfig, ui32 poolId, NMonitoring::TDynamicCounterPtr counters) {
+    const bool isTinySharedConfiguration = IsTinySharedConfiguration(systemConfig);
     switch (poolConfig.GetType()) {
         case NKikimrConfig::TActorSystemConfig::TExecutor::BASIC: {
             NActors::TBasicExecutorPoolConfig basic;
@@ -98,6 +129,7 @@ void AddExecutorPool(NActors::TCpuManagerConfig& cpuManager, const NKikimrConfig
             if (poolConfig.HasForcedForeignSlots()) {
                 basic.ForcedForeignSlotCount = poolConfig.GetForcedForeignSlots();
             }
+            basic.HarmonizerPoolKind = InferHarmonizerPoolKind(basic, isTinySharedConfiguration);
             cpuManager.Basic.emplace_back(std::move(basic));
 
             break;

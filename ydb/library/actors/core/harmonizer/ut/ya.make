@@ -15,6 +15,7 @@ PEERDIR(
 )
 
 SRCS(
+    cpu_consumption_ut.cpp
     cpu_count_ut.cpp
     harmonizer_ut.cpp
     history_ut.cpp

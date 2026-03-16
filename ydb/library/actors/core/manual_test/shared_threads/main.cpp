@@ -142,6 +142,7 @@ THolder<TActorSystemSetup> BuildActorSystemSetup(bool useSharedThread = true) {
         .MaxThreadCount = 3,
         .DefaultThreadCount = 1,
         .HasSharedThread = useSharedThread,
+        .HarmonizerPoolKind = useSharedThread ? EHarmonizerPoolKind::RegularWithOwnedShared : EHarmonizerPoolKind::Regular,
     });
     setup->CpuManager.Basic.emplace_back(TBasicExecutorPoolConfig{
         .PoolId = 1,
@@ -151,6 +152,7 @@ THolder<TActorSystemSetup> BuildActorSystemSetup(bool useSharedThread = true) {
         .MaxThreadCount = 4,
         .DefaultThreadCount = 2,
         .HasSharedThread = useSharedThread,
+        .HarmonizerPoolKind = useSharedThread ? EHarmonizerPoolKind::RegularWithOwnedShared : EHarmonizerPoolKind::Regular,
     });
 
     setup->Scheduler = new TBasicSchedulerThread(TSchedulerConfig(512, 0));
@@ -170,6 +172,7 @@ THolder<TActorSystemSetup> BuildActorSystemSetupSharedOnlyCore() {
         .MaxThreadCount = 1,
         .DefaultThreadCount = 1,
         .HasSharedThread = true,
+        .HarmonizerPoolKind = EHarmonizerPoolKind::OwnedSharedOnly,
         .AdjacentPools = {1},
     });
     setup->CpuManager.Basic.emplace_back(TBasicExecutorPoolConfig{
@@ -180,6 +183,7 @@ THolder<TActorSystemSetup> BuildActorSystemSetupSharedOnlyCore() {
         .MaxThreadCount = 0,
         .DefaultThreadCount = 0,
         .HasSharedThread = false,
+        .HarmonizerPoolKind = EHarmonizerPoolKind::ForeignSharedOnly,
         .ForcedForeignSlotCount = 1,
     });
 

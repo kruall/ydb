@@ -14,6 +14,7 @@ Y_UNIT_TEST_SUITE(CpuCountTest) {
         TBasicExecutorPool pool(config, nullptr, nullptr);
 
         UNIT_ASSERT_EQUAL(pool.GetFullThreadCount(), 3);
+        UNIT_ASSERT_EQUAL(pool.GetHarmonizerPoolKind(), EHarmonizerPoolKind::Regular);
         UNIT_ASSERT_EQUAL(pool.GetMinFullThreadCount(), 1);
         UNIT_ASSERT_EQUAL(pool.GetMaxFullThreadCount(), 3);
         UNIT_ASSERT_EQUAL(pool.GetDefaultFullThreadCount(), 2);
@@ -52,10 +53,12 @@ Y_UNIT_TEST_SUITE(CpuCountTest) {
         config.MaxThreadCount = 3;
         config.Threads = 3;
         config.HasSharedThread = true;
+        config.HarmonizerPoolKind = EHarmonizerPoolKind::RegularWithOwnedShared;
 
         TBasicExecutorPool pool(config, nullptr, nullptr);
 
         UNIT_ASSERT_EQUAL(pool.GetFullThreadCount(), 2);
+        UNIT_ASSERT_EQUAL(pool.GetHarmonizerPoolKind(), EHarmonizerPoolKind::RegularWithOwnedShared);
         UNIT_ASSERT_EQUAL(pool.GetDefaultFullThreadCount(), 1);
         UNIT_ASSERT_EQUAL(pool.GetMinFullThreadCount(), 0);
         UNIT_ASSERT_EQUAL(pool.GetMaxFullThreadCount(), 2);
@@ -81,5 +84,43 @@ Y_UNIT_TEST_SUITE(CpuCountTest) {
 
         pool.SetFullThreadCount(0);
         UNIT_ASSERT_DOUBLES_EQUAL(pool.GetThreadCount(), 0.3, 1e-6);
+    }
+
+    Y_UNIT_TEST(TestOwnedSharedOnlyPoolKind) {
+        TBasicExecutorPoolConfig config;
+        config.Threads = 1;
+        config.MinThreadCount = 1;
+        config.DefaultThreadCount = 1;
+        config.MaxThreadCount = 1;
+        config.HasSharedThread = true;
+        config.HarmonizerPoolKind = EHarmonizerPoolKind::OwnedSharedOnly;
+
+        TBasicExecutorPool pool(config, nullptr, nullptr);
+
+        UNIT_ASSERT_EQUAL(pool.GetHarmonizerPoolKind(), EHarmonizerPoolKind::OwnedSharedOnly);
+        UNIT_ASSERT_EQUAL(pool.GetFullThreadCount(), 0);
+        UNIT_ASSERT_EQUAL(pool.GetDefaultFullThreadCount(), 0);
+        UNIT_ASSERT_EQUAL(pool.GetMinFullThreadCount(), 0);
+        UNIT_ASSERT_EQUAL(pool.GetMaxFullThreadCount(), 0);
+    }
+
+    Y_UNIT_TEST(TestForeignSharedOnlyPoolKind) {
+        TBasicExecutorPoolConfig config;
+        config.Threads = 0;
+        config.MinThreadCount = 0;
+        config.DefaultThreadCount = 0;
+        config.MaxThreadCount = 0;
+        config.HasSharedThread = false;
+        config.HarmonizerPoolKind = EHarmonizerPoolKind::ForeignSharedOnly;
+        config.ForcedForeignSlotCount = 1;
+
+        TBasicExecutorPool pool(config, nullptr, nullptr);
+
+        UNIT_ASSERT_EQUAL(pool.GetHarmonizerPoolKind(), EHarmonizerPoolKind::ForeignSharedOnly);
+        UNIT_ASSERT_EQUAL(pool.GetFullThreadCount(), 0);
+        UNIT_ASSERT_EQUAL(pool.GetDefaultFullThreadCount(), 0);
+        UNIT_ASSERT_EQUAL(pool.GetMinFullThreadCount(), 0);
+        UNIT_ASSERT_EQUAL(pool.GetMaxFullThreadCount(), 0);
+        UNIT_ASSERT_DOUBLES_EQUAL(pool.GetMaxThreadCount(), 1.0, 1e-6);
     }
 }

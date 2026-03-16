@@ -73,6 +73,33 @@ namespace {
         return elapsed <= currentThreadCount - 1.0;
     }
 
+    bool IsCurrentCapacitySaturated(float lastSecondCpu, float currentThreadCount) {
+        return lastSecondCpu >= Max(0.1f, currentThreadCount - 0.5f);
+    }
+
+    bool IsNeedyRegularPool(const TCpuConsumptionInfo& poolConsumption, float currentFullThreadCount) {
+        return IsCurrentCapacitySaturated(poolConsumption.LastSecondCpu, currentFullThreadCount);
+    }
+
+    bool IsNeedyRegularWithOwnedSharedPool(
+        const TCpuConsumptionInfo& poolConsumption,
+        const TCpuConsumptionInfo& poolFullThreadConsumption,
+        float currentThreadCount,
+        float currentFullThreadCount)
+    {
+        const bool usesAllCurrentCapacity = IsCurrentCapacitySaturated(poolConsumption.LastSecondCpu, currentThreadCount + 1); // add gap for shared threads
+        const bool needsMoreThanOwnedShared = poolFullThreadConsumption.LastSecondCpu >= currentFullThreadCount - 1.0f;
+        return usesAllCurrentCapacity || needsMoreThanOwnedShared;
+    }
+
+    bool IsNeedySharedOnlyPool(
+        const TCpuConsumptionInfo& poolConsumption,
+        const TSharedInfo& sharedInfo,
+        float currentThreadCount)
+    {
+        return sharedInfo.FreeCpu <= 0.1f;
+    }
+
 } // namespace
 
 
@@ -124,15 +151,37 @@ void THarmonizerCpuConsumption::Pull(const std::vector<std::unique_ptr<TPoolInfo
             IsStarvedPresent = true;
         }
 
-        float expectedThreadCount = pool.GetFullThreadCount() + (sharedInfo.OwnedThreads[poolIdx] != -1 ? 1 : 0) + 0.5;
-        bool isMoreThanExpected = (PoolConsumption[poolIdx].LastSecondCpu >= expectedThreadCount) && (PoolFullThreadConsumption[poolIdx].LastSecondCpu >= currentFullThreadCount - 1);
-        bool isNeedy = (pool.IsAvgPingGood() || pool.NewNotEnoughCpuExecutions) && (PoolConsumption[poolIdx].LastSecondCpu >= currentThreadCount || isMoreThanExpected);
+        const bool hasNeedSignal = pool.IsAvgPingGood() || pool.NewNotEnoughCpuExecutions;
+        bool isNeedy = false;
+        switch (pool.HarmonizerPoolKind) {
+            case EHarmonizerPoolKind::Regular:
+                isNeedy = hasNeedSignal
+                    && IsNeedyRegularPool(PoolConsumption[poolIdx], currentFullThreadCount);
+                break;
+            case EHarmonizerPoolKind::RegularWithOwnedShared:
+                isNeedy = hasNeedSignal
+                    && IsNeedyRegularWithOwnedSharedPool(
+                        PoolConsumption[poolIdx],
+                        PoolFullThreadConsumption[poolIdx],
+                        currentThreadCount,
+                        currentFullThreadCount);
+                break;
+            case EHarmonizerPoolKind::ForeignSharedOnly:
+            case EHarmonizerPoolKind::OwnedSharedOnly:
+                isNeedy = hasNeedSignal
+                    && IsNeedySharedOnlyPool(PoolConsumption[poolIdx], sharedInfo, currentThreadCount);
+                break;
+        }
         IsNeedyByPool.push_back(isNeedy);
         if (isNeedy) {
             NeedyPools.push_back(poolIdx);
         }
 
-        bool isHoggish = !isNeedy && IsHoggish(PoolFullThreadConsumption[poolIdx].Elapsed, currentFullThreadCount) && IsHoggish(PoolFullThreadConsumption[poolIdx].LastSecondElapsed, currentFullThreadCount);
+        bool isHoggish = (pool.HarmonizerPoolKind == EHarmonizerPoolKind::Regular
+                || pool.HarmonizerPoolKind == EHarmonizerPoolKind::RegularWithOwnedShared)
+            && !isNeedy
+            && IsHoggish(PoolFullThreadConsumption[poolIdx].Elapsed, currentFullThreadCount)
+            && IsHoggish(PoolFullThreadConsumption[poolIdx].LastSecondElapsed, currentFullThreadCount);
         if (isHoggish) {
             float freeCpu = std::min(currentFullThreadCount - PoolFullThreadConsumption[poolIdx].Elapsed, currentFullThreadCount - PoolFullThreadConsumption[poolIdx].LastSecondElapsed);
             HoggishPools.push_back({poolIdx, freeCpu});

@@ -3,6 +3,7 @@
 #include "defs.h"
 
 #include "history.h"
+#include <ydb/library/actors/core/config.h>
 #include <ydb/library/actors/core/executor_pool.h>
 
 #include <library/cpp/monlib/dynamic_counters/counters.h>
@@ -26,6 +27,7 @@ struct TPoolInfo {
     ISharedPool* Shared = nullptr;
     IExecutorPool* Pool = nullptr;
     TBasicExecutorPool* BasicPool = nullptr;
+    EHarmonizerPoolKind HarmonizerPoolKind = EHarmonizerPoolKind::Regular;
 
     i16 DefaultFullThreadCount = 0;
     i16 MinFullThreadCount = 0;
@@ -86,6 +88,8 @@ struct TPoolInfo {
     i16 GetFullThreadCount();
     float GetThreadCount();
     void SetFullThreadCount(i16 threadCount);
+    bool HasOwnedSharedThread() const;
+    bool CanChangeFullThreadCount() const;
     bool IsAvgPingGood();
 }; // struct TPoolInfo
 

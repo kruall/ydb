@@ -11,6 +11,13 @@
 
 namespace NActors {
 
+    enum class EHarmonizerPoolKind : ui8 {
+        Regular,
+        RegularWithOwnedShared,
+        ForeignSharedOnly,
+        OwnedSharedOnly,
+    };
+
     struct TBasicExecutorPoolConfig {
         static constexpr TDuration DEFAULT_TIME_PER_MAILBOX = TDuration::MilliSeconds(10);
         static constexpr ui32 DEFAULT_EVENTS_PER_MAILBOX = 100;
@@ -31,6 +38,7 @@ namespace NActors {
         i16 SoftProcessingDurationTs = 0;
         EASProfile ActorSystemProfile = EASProfile::Default;
         bool HasSharedThread = false;
+        EHarmonizerPoolKind HarmonizerPoolKind = EHarmonizerPoolKind::Regular;
         bool UseRingQueue = false;
         ui16 MinLocalQueueSize = 0;
         ui16 MaxLocalQueueSize = 0;

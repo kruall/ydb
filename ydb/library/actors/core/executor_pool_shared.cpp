@@ -66,7 +66,7 @@ namespace NActors {
         }
 
         i16 NextAdjacentPool(const TPoolManager& poolManager, i16 poolId, i16 currentPoolId) {
-            if (poolId == currentPoolId) {
+            if (currentPoolId == -1 || poolId == currentPoolId) {
                 if (poolManager.PoolInfos[poolId].AdjacentPools.empty()) {
                     return poolId;
                 }

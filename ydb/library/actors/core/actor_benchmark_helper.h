@@ -292,6 +292,9 @@ struct TActorBenchmark {
         basic.SpinThreshold = TSettings::DefaultSpinThreshold;
         basic.TimePerMailbox = TDuration::Hours(1);
         basic.HasSharedThread = hasSharedThread;
+        basic.HarmonizerPoolKind = hasSharedThread
+            ? EHarmonizerPoolKind::RegularWithOwnedShared
+            : EHarmonizerPoolKind::Regular;
         basic.SoftProcessingDurationTs = Us2Ts(100);
         if (activateEveryEvent) {
             basic.EventsPerMailbox = 1;

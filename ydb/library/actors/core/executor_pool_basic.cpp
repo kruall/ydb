@@ -88,6 +88,9 @@ namespace NActors {
             .DefaultThreadCount = defaultThreadCount,
             .Priority = priority,
             .HasSharedThread = hasOwnSharedThread,
+            .HarmonizerPoolKind = hasOwnSharedThread
+                ? EHarmonizerPoolKind::RegularWithOwnedShared
+                : EHarmonizerPoolKind::Regular,
         }, harmonizer, jail)
     {
         if (affinity != nullptr) {
@@ -113,6 +116,7 @@ namespace NActors {
         , Harmonizer(harmonizer)
         , SoftProcessingDurationTs(cfg.SoftProcessingDurationTs)
         , HasOwnSharedThread(cfg.HasSharedThread)
+        , HarmonizerPoolKind(cfg.HarmonizerPoolKind)
         , MaxLocalQueueSize(cfg.MaxLocalQueueSize)
         , MinLocalQueueSize(cfg.MinLocalQueueSize)
         , Priority(cfg.Priority)
@@ -162,6 +166,9 @@ namespace NActors {
         DefaultThreadCount = DefaultFullThreadCount + HasOwnSharedThread;
         MinThreadCount = MinFullThreadCount + HasOwnSharedThread;
         MaxThreadCount = MaxFullThreadCount + HasOwnSharedThread;
+        if (HarmonizerPoolKind == EHarmonizerPoolKind::ForeignSharedOnly) {
+            MaxThreadCount = cfg.ForcedForeignSlotCount;
+        }
 
         Threads.Reset(new NThreading::TPadded<TExecutorThreadCtx>[MaxFullThreadCount]);
         if constexpr (DebugMode) {
@@ -716,6 +723,10 @@ namespace NActors {
 
     i16 TBasicExecutorPool::GetPriority() const {
         return Priority;
+    }
+
+    EHarmonizerPoolKind TBasicExecutorPool::GetHarmonizerPoolKind() const {
+        return HarmonizerPoolKind;
     }
 
     void TBasicExecutorPool::SetLocalQueueSize(ui16 size) {

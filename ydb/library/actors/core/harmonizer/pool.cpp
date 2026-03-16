@@ -135,6 +135,16 @@ void TPoolInfo::SetFullThreadCount(i16 threadCount) {
     Pool->SetFullThreadCount(threadCount);
 }
 
+bool TPoolInfo::HasOwnedSharedThread() const {
+    return HarmonizerPoolKind == EHarmonizerPoolKind::RegularWithOwnedShared
+        || HarmonizerPoolKind == EHarmonizerPoolKind::OwnedSharedOnly;
+}
+
+bool TPoolInfo::CanChangeFullThreadCount() const {
+    return HarmonizerPoolKind == EHarmonizerPoolKind::Regular
+        || HarmonizerPoolKind == EHarmonizerPoolKind::RegularWithOwnedShared;
+}
+
 bool TPoolInfo::IsAvgPingGood() {
     bool res = true;
     if (AvgPingCounter) {
