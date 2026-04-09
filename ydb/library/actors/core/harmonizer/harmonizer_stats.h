@@ -38,6 +38,7 @@ namespace NActors {
         float MinUsedCpu = 0.0;
         float MaxElapsedCpu = 0.0;
         float MinElapsedCpu = 0.0;
+        float ExternalCpu = 0.0;
 
         float AvgAwakeningTimeUs = 0;
         float AvgWakingUpTimeUs = 0;

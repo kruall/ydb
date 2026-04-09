@@ -15,6 +15,7 @@ ENDIF()
 
 SRCS(
     cpu_consumption.cpp
+    external_cpu.cpp
     pool.cpp
     shared_info.cpp
     waiting_stats.cpp

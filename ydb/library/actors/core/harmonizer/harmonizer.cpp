@@ -3,6 +3,7 @@
 #include "pool.h"
 #include "waiting_stats.h"
 #include "cpu_consumption.h"
+#include "external_cpu.h"
 #include "shared_info.h"
 #include "debug.h"
 #include <ydb/library/actors/core/executor_pool.h>
@@ -58,6 +59,8 @@ private:
     float ProcessingBudget = 0.0;
     std::atomic<float> SharedFreeCpu = 0.0;
     std::atomic<float> Budget = 0.0;
+    std::atomic<float> ExternalCpu = 0.0;
+    TExternalCpuLoadCollector ExternalCpuLoadCollector;
 
     void PullStats(ui64 ts);
     void PullSharedInfo();
@@ -110,6 +113,7 @@ void THarmonizer::PullStats(ui64 ts) {
     }
     CpuConsumption.Pull(Pools, SharedInfo);
     ProcessingBudget = CpuConsumption.BudgetLSWithoutSharedCpu;
+    ExternalCpu.store(ExternalCpuLoadCollector.Pull(), std::memory_order_relaxed);
 }
 
 void THarmonizer::ProcessWaitingStats() {
@@ -535,6 +539,7 @@ void THarmonizer::GetStats(THarmonizerStats &stats) const {
         .MinUsedCpu = MinUsedCpu.load(std::memory_order_relaxed),
         .MaxElapsedCpu = MaxElapsedCpu.load(std::memory_order_relaxed),
         .MinElapsedCpu = MinElapsedCpu.load(std::memory_order_relaxed),
+        .ExternalCpu = ExternalCpu.load(std::memory_order_relaxed),
         .AvgAwakeningTimeUs = WaitingInfo.AvgAwakeningTimeUs.load(std::memory_order_relaxed),
         .AvgWakingUpTimeUs = WaitingInfo.AvgWakingUpTimeUs.load(std::memory_order_relaxed),
         .Budget = Budget.load(std::memory_order_relaxed),
@@ -581,6 +586,7 @@ TString THarmonizerStats::ToString() const {
         << "MinUsedCpu: " << MinUsedCpu << ", "
         << "MaxElapsedCpu: " << MaxElapsedCpu << ", "
         << "MinElapsedCpu: " << MinElapsedCpu << ", "
+        << "ExternalCpu: " << ExternalCpu << ", "
         << "AvgAwakeningTimeUs: " << AvgAwakeningTimeUs << ", "
         << "AvgWakingUpTimeUs: " << AvgWakingUpTimeUs << ", "
         << "Budget: " << Budget << ", "
