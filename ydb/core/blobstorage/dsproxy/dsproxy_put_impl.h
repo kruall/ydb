@@ -10,6 +10,7 @@
 #include "dsproxy_strategy_put_m3of4.h"
 #include "request_history.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 #include <util/generic/set.h>
 
 namespace NKikimr {
@@ -21,7 +22,8 @@ public:
     using TPutResultVec = TBatchedVec<std::pair<ui64, std::unique_ptr<TEvBlobStorage::TEvPutResult>>>;
 
     using TPutEvent = std::variant<std::unique_ptr<TEvBlobStorage::TEvVPut>,
-                                   std::unique_ptr<TEvBlobStorage::TEvVMultiPut>>;
+                                   std::unique_ptr<TEvBlobStorage::TEvVMultiPut>,
+                                   std::unique_ptr<TEvBlobStorage::TEvVPutFlat>>;
 
 private:
     TBlobStorageGroupInfo::TServiceIds VDisksSvc;
@@ -46,6 +48,7 @@ private:
     const TEvBlobStorage::TEvPut::ETactic Tactic;
 
     const TAccelerationParams AccelerationParams;
+    const bool EnableVDiskFlatEvents = false;
 
     struct TBlobInfo {
         TLogoBlobID BlobId;
@@ -118,7 +121,7 @@ public:
     TPutImpl(const TIntrusivePtr<TBlobStorageGroupInfo> &info, const TIntrusivePtr<TGroupQueues> &state,
             TEvBlobStorage::TEvPut *ev, const TIntrusivePtr<TBlobStorageGroupProxyMon> &mon,
             bool enableRequestMod3x3ForMinLatecy, TActorId recipient, ui64 cookie, NWilson::TTraceId traceId,
-            const TAccelerationParams& accelerationParams)
+            const TAccelerationParams& accelerationParams, bool enableVDiskFlatEvents)
         : Info(info)
         , Blackboard(info, state, ev->HandleClass, NKikimrBlobStorage::EGetHandleClass::AsyncRead)
         , IsDone(1)
@@ -129,6 +132,7 @@ public:
         , EnableRequestMod3x3ForMinLatecy(enableRequestMod3x3ForMinLatecy)
         , Tactic(ev->Tactic)
         , AccelerationParams(accelerationParams)
+        , EnableVDiskFlatEvents(enableVDiskFlatEvents)
         , History(Info)
     {
         BlobMap.emplace(ev->Id, Blobs.size());
@@ -144,7 +148,8 @@ public:
     TPutImpl(const TIntrusivePtr<TBlobStorageGroupInfo> &info, const TIntrusivePtr<TGroupQueues> &state,
             TBatchedVec<TEvBlobStorage::TEvPut::TPtr> &events, const TIntrusivePtr<TBlobStorageGroupProxyMon> &mon,
             NKikimrBlobStorage::EPutHandleClass putHandleClass, TEvBlobStorage::TEvPut::ETactic tactic,
-            bool enableRequestMod3x3ForMinLatecy, const TAccelerationParams& accelerationParams)
+            bool enableRequestMod3x3ForMinLatecy, const TAccelerationParams& accelerationParams,
+            bool enableVDiskFlatEvents)
         : Info(info)
         , Blackboard(info, state, putHandleClass, NKikimrBlobStorage::EGetHandleClass::AsyncRead)
         , IsDone(events.size())
@@ -155,6 +160,7 @@ public:
         , EnableRequestMod3x3ForMinLatecy(enableRequestMod3x3ForMinLatecy)
         , Tactic(tactic)
         , AccelerationParams(accelerationParams)
+        , EnableVDiskFlatEvents(enableVDiskFlatEvents)
         , History(Info)
     {
         Y_ABORT_UNLESS(events.size(), "TEvPut vector is empty");
@@ -251,29 +257,40 @@ public:
             if (std::next(it) == end) { // TEvVPut
                 auto [orderNumber, ptr] = *it++;
                 TBlobInfo& blob = Blobs[ptr->BlobIdx];
-                auto ev = std::make_unique<TEvBlobStorage::TEvVPut>(ptr->Id, ptr->Buffer, vdiskId, false, nullptr,
-                    blob.Deadline, Blackboard.PutHandleClass, checksumming);
-
-                auto& record = ev->Record;
-                for (const auto& [tabletId, generation] : blob.ExtraBlockChecks) {
-                    auto *p = record.AddExtraBlockChecks();
-                    p->SetTabletId(tabletId);
-                    p->SetGeneration(generation);
-                }
-                if (blob.IssueKeepFlag) {
-                    record.SetIssueKeepFlag(true);
-                }
-                if (blob.IgnoreBlock) {
-                    record.SetIgnoreBlock(true);
-                }
-                if (blob.IsZeroEntry) {
-                    record.SetIsZeroEntry(true);
-                }
 
                 auto vput = History.CreateVPut(1, orderNumber);
                 vput.AddSubrequest(ptr->Id);
                 History.AddVPutToWaitingList(std::move(vput));
-                events.emplace_back(std::move(ev));
+                if (EnableVDiskFlatEvents) {
+                    std::unique_ptr<TEvBlobStorage::TEvVPutFlat> ev(TEvBlobStorage::TEvVPutFlat::MakeSinglePut(
+                        ptr->Id, ptr->Buffer, vdiskId, false, nullptr, blob.Deadline, Blackboard.PutHandleClass,
+                        checksumming));
+                    ev->SetSinglePutFlags(blob.IssueKeepFlag, blob.IgnoreBlock, blob.IsZeroEntry);
+                    for (const auto& [tabletId, generation] : blob.ExtraBlockChecks) {
+                        ev->AddSingleExtraBlockCheck(tabletId, generation);
+                    }
+                    events.emplace_back(std::move(ev));
+                } else {
+                    auto ev = std::make_unique<TEvBlobStorage::TEvVPut>(ptr->Id, ptr->Buffer, vdiskId, false, nullptr,
+                        blob.Deadline, Blackboard.PutHandleClass, checksumming);
+
+                    auto& record = ev->Record;
+                    for (const auto& [tabletId, generation] : blob.ExtraBlockChecks) {
+                        auto *p = record.AddExtraBlockChecks();
+                        p->SetTabletId(tabletId);
+                        p->SetGeneration(generation);
+                    }
+                    if (blob.IssueKeepFlag) {
+                        record.SetIssueKeepFlag(true);
+                    }
+                    if (blob.IgnoreBlock) {
+                        record.SetIgnoreBlock(true);
+                    }
+                    if (blob.IsZeroEntry) {
+                        record.SetIsZeroEntry(true);
+                    }
+                    events.emplace_back(std::move(ev));
+                }
                 HandoffPartsSent += ptr->IsHandoff;
                 ++VPutRequests;
             } else { // TEvVMultiPut
@@ -284,21 +301,34 @@ public:
                     deadline = Max(deadline, Blobs[ptr->BlobIdx].Deadline);
                     ++itemsCount;
                 }
-                auto ev = std::make_unique<TEvBlobStorage::TEvVMultiPut>(vdiskId, deadline, Blackboard.PutHandleClass,
-                    false);
-
                 ui8 orderNumber = it->first;
                 auto vput = History.CreateVPut(itemsCount, orderNumber);
-                while (it != end) {
-                    auto [orderNumber, ptr] = *it++;
-                    TBlobInfo& blob = Blobs[ptr->BlobIdx];
-                    ev->AddVPut(ptr->Id, TRcBuf(ptr->Buffer), nullptr, blob.IssueKeepFlag, blob.IgnoreBlock,
-                        blob.IsZeroEntry, &blob.ExtraBlockChecks, blob.Span.GetTraceId(), checksumming);
-                    HandoffPartsSent += ptr->IsHandoff;
-                    vput.AddSubrequest(ptr->Id);
+                if (EnableVDiskFlatEvents) {
+                    std::unique_ptr<TEvBlobStorage::TEvVPutFlat> ev(TEvBlobStorage::TEvVPutFlat::MakeMultiPut(
+                        vdiskId, deadline, Blackboard.PutHandleClass, false));
+                    while (it != end) {
+                        auto [orderNumber, ptr] = *it++;
+                        TBlobInfo& blob = Blobs[ptr->BlobIdx];
+                        ev->AddVPut(ptr->Id, TRcBuf(ptr->Buffer), nullptr, blob.IssueKeepFlag, blob.IgnoreBlock,
+                            blob.IsZeroEntry, &blob.ExtraBlockChecks, blob.Span.GetTraceId(), checksumming);
+                        HandoffPartsSent += ptr->IsHandoff;
+                        vput.AddSubrequest(ptr->Id);
+                    }
+                    events.emplace_back(std::move(ev));
+                } else {
+                    auto ev = std::make_unique<TEvBlobStorage::TEvVMultiPut>(vdiskId, deadline, Blackboard.PutHandleClass,
+                        false);
+                    while (it != end) {
+                        auto [orderNumber, ptr] = *it++;
+                        TBlobInfo& blob = Blobs[ptr->BlobIdx];
+                        ev->AddVPut(ptr->Id, TRcBuf(ptr->Buffer), nullptr, blob.IssueKeepFlag, blob.IgnoreBlock,
+                            blob.IsZeroEntry, &blob.ExtraBlockChecks, blob.Span.GetTraceId(), checksumming);
+                        HandoffPartsSent += ptr->IsHandoff;
+                        vput.AddSubrequest(ptr->Id);
+                    }
+                    events.emplace_back(std::move(ev));
                 }
                 History.AddVPutToWaitingList(std::move(vput));
-                events.emplace_back(std::move(ev));
                 ++VMultiPutRequests;
             }
         }

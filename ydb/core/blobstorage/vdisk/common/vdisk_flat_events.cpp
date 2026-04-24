@@ -66,6 +66,22 @@ namespace NKikimr {
         return holder.Release();
     }
 
+    void TEvBlobStorage::TEvVPutFlat::SetSinglePutFlags(bool issueKeepFlag, bool ignoreBlock, bool isZeroEntry) {
+        Y_ENSURE(IsSinglePut(), "SetSinglePutFlags is only available for TEvVPutFlat single-put scheme");
+        auto frontend = GetFrontend<TSinglePutV1>();
+        auto flags = static_cast<NVDiskFlat::TPutFlagsRaw>(frontend.template Field<TFlagsTag>());
+        flags.SetIssueKeepFlag(issueKeepFlag);
+        flags.SetIgnoreBlock(ignoreBlock);
+        flags.SetIsZeroEntry(isZeroEntry);
+        frontend.template Field<TFlagsTag>() = flags;
+    }
+
+    void TEvBlobStorage::TEvVPutFlat::AddSingleExtraBlockCheck(ui64 tabletId, ui32 generation) {
+        Y_ENSURE(IsSinglePut(), "AddSingleExtraBlockCheck is only available for TEvVPutFlat single-put scheme");
+        AppendFlatArrayItem(GetFrontend<TSinglePutV1>().template Array<TExtraBlockChecksTag>(),
+            NVDiskFlat::TExtraBlockCheckRaw{.TabletId = tabletId, .Generation = generation});
+    }
+
     void TEvBlobStorage::TEvVPutFlat::AddVPut(const TLogoBlobID& logoBlobId, const TRcBuf& buffer, ui64 *cookie,
             bool issueKeepFlag, bool ignoreBlock, bool isZeroEntry,
             std::vector<std::pair<ui64, ui32>> *extraBlockChecks, NWilson::TTraceId traceId, bool checksumming) {
@@ -109,6 +125,22 @@ namespace NKikimr {
         frontend.template Bytes<TPayloadTag>().Append(std::move(rope));
     }
 
+    void TEvBlobStorage::TEvVPutFlat::SetCookieIfAbsent(ui64 cookie) {
+        auto set = [&]<class TFrontend>(TFrontend frontend) {
+            auto flags = static_cast<NVDiskFlat::TPutFlagsRaw>(frontend.template Field<TFlagsTag>());
+            if (!flags.HasCookie()) {
+                flags.SetHasCookie(true);
+                frontend.template Field<TFlagsTag>() = flags;
+                frontend.template Field<TCookieTag>() = cookie;
+            }
+        };
+        if (IsSinglePut()) {
+            set(GetFrontend<TSinglePutV1>());
+        } else {
+            set(GetFrontend<TMultiPutV1>());
+        }
+    }
+
     ui64 TEvBlobStorage::TEvVPutFlat::GetBufferBytes() const {
         if (IsSinglePut()) {
             return GetSize<TPayloadTag>();
@@ -127,6 +159,13 @@ namespace NKikimr {
         auto items = GetFrontend<TMultiPutV1>().template Array<TItemsTag>();
         Y_ENSURE(idx < items.size(), "Put item index is out of range");
         return items.Get(idx).PayloadSize;
+    }
+
+    ui64 TEvBlobStorage::TEvVPutFlat::GetItemsCount() const {
+        if (IsSinglePut()) {
+            return 1;
+        }
+        return GetFrontend<TMultiPutV1>().template ArraySize<TItemsTag>();
     }
 
     TRope TEvBlobStorage::TEvVPutFlat::GetBuffer() const {

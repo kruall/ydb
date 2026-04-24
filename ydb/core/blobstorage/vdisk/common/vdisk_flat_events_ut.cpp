@@ -25,7 +25,12 @@ namespace NKikimr {
             UNIT_ASSERT(ev->IsSinglePut());
             UNIT_ASSERT_VALUES_EQUAL(ev->GetVDiskID(), VDiskId());
             UNIT_ASSERT_VALUES_EQUAL(ev->GetBufferBytes(), 3);
+            UNIT_ASSERT_VALUES_EQUAL(ev->GetItemsCount(), 1);
             UNIT_ASSERT_VALUES_EQUAL(ev->GetBuffer().ConvertToString(), "abc");
+
+            ev->SetCookieIfAbsent(42);
+            ev->SetSinglePutFlags(true, true, false);
+            ev->AddSingleExtraBlockCheck(100, 2);
         }
 
         Y_UNIT_TEST(VPutMulti) {
@@ -39,6 +44,7 @@ namespace NKikimr {
             TString error;
             UNIT_ASSERT(ev->Validate(error));
             UNIT_ASSERT(ev->IsMultiPut());
+            UNIT_ASSERT_VALUES_EQUAL(ev->GetItemsCount(), 2);
             UNIT_ASSERT_VALUES_EQUAL(ev->GetBufferBytes(), 7);
             UNIT_ASSERT_VALUES_EQUAL(ev->GetBufferBytes(0), 3);
             UNIT_ASSERT_VALUES_EQUAL(ev->GetBufferBytes(1), 4);

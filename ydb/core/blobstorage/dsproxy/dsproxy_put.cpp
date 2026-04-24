@@ -139,7 +139,10 @@ class TBlobStorageGroupPutRequest : public TBlobStorageGroupRequestActor {
             for (const auto& ev : events) {
                 auto getCounter = TOverloaded{
                     [&](const std::unique_ptr<TEvBlobStorage::TEvVPut>&) { return Mon->NodeMon->AccelerateEvVPutCount; },
-                    [&](const std::unique_ptr<TEvBlobStorage::TEvVMultiPut>&) { return Mon->NodeMon->AccelerateEvVMultiPutCount; }
+                    [&](const std::unique_ptr<TEvBlobStorage::TEvVMultiPut>&) { return Mon->NodeMon->AccelerateEvVMultiPutCount; },
+                    [&](const std::unique_ptr<TEvBlobStorage::TEvVPutFlat>& item) {
+                        return item->IsSinglePut() ? Mon->NodeMon->AccelerateEvVPutCount : Mon->NodeMon->AccelerateEvVMultiPutCount;
+                    }
                 };
                 std::visit(getCounter, ev)->Inc();
             }
@@ -148,10 +151,15 @@ class TBlobStorageGroupPutRequest : public TBlobStorageGroupRequestActor {
         // Send to VDisks.
         for (auto& ev : events) {
             if (LWPROBE_ENABLED(DSProxyVPutSent) || Orbit.HasShuttles()) {
-                auto vDiskId = std::visit([](const auto& item) { return VDiskIDFromVDiskID(item->Record.GetVDiskID()); }, ev);
-                auto itemsCount = std::visit(overloaded{
-                    [](const std::unique_ptr<TEvBlobStorage::TEvVPut>&) { return 1; },
-                    [](const std::unique_ptr<TEvBlobStorage::TEvVMultiPut>& item) { return item->Record.GetItems().size(); }
+                auto vDiskId = std::visit(TOverloaded{
+                    [](const std::unique_ptr<TEvBlobStorage::TEvVPut>& item) { return VDiskIDFromVDiskID(item->Record.GetVDiskID()); },
+                    [](const std::unique_ptr<TEvBlobStorage::TEvVMultiPut>& item) { return VDiskIDFromVDiskID(item->Record.GetVDiskID()); },
+                    [](const std::unique_ptr<TEvBlobStorage::TEvVPutFlat>& item) { return item->GetVDiskID(); }
+                }, ev);
+                auto itemsCount = std::visit(TOverloaded{
+                    [](const std::unique_ptr<TEvBlobStorage::TEvVPut>&) -> ui64 { return 1; },
+                    [](const std::unique_ptr<TEvBlobStorage::TEvVMultiPut>& item) -> ui64 { return item->Record.GetItems().size(); },
+                    [](const std::unique_ptr<TEvBlobStorage::TEvVPutFlat>& item) { return item->GetItemsCount(); }
                 }, ev);
                 LWTRACK(
                     DSProxyVPutSent, Orbit,
@@ -603,7 +611,7 @@ public:
         : TBlobStorageGroupRequestActor(params)
         , PutImpl(Info, GroupQueues, params.Common.Event, Mon,
                 params.EnableRequestMod3x3ForMinLatency, params.Common.Source,
-                params.Common.Cookie, Span.GetTraceId(), params.AccelerationParams)
+                params.Common.Cookie, Span.GetTraceId(), params.AccelerationParams, params.EnableVDiskFlatEvents)
         , WaitingVDiskResponseCount(Info->GetTotalVDisksNum())
         , HandleClass(params.Common.Event->HandleClass)
         , ReportedBytes(0)
@@ -634,7 +642,7 @@ public:
     TBlobStorageGroupPutRequest(TBlobStorageGroupMultiPutParameters& params)
         : TBlobStorageGroupRequestActor(params)
         , PutImpl(Info, GroupQueues, params.Events, Mon, params.HandleClass, params.Tactic,
-                params.EnableRequestMod3x3ForMinLatency, params.AccelerationParams)
+                params.EnableRequestMod3x3ForMinLatency, params.AccelerationParams, params.EnableVDiskFlatEvents)
         , WaitingVDiskResponseCount(Info->GetTotalVDisksNum())
         , IsManyPuts(true)
         , HandleClass(params.HandleClass)
@@ -865,7 +873,8 @@ public:
 
     void UpdatePengingVDiskResponseCount(const TDeque<TPutImpl::TPutEvent>& putEvents) {
         for (auto& event : putEvents) {
-            std::visit([&](auto& event) {
+            std::visit(TOverloaded{
+            [&](const std::unique_ptr<TEvBlobStorage::TEvVPut>& event) {
                 ui64 causeIdx = RootCauseTrack.RegisterCause();
                 if (!event->Record.HasCookie() && RootCauseTrack.IsOn) {
                     event->Record.SetCookie(causeIdx);
@@ -873,7 +882,25 @@ public:
                 const ui32 orderNumber = Info->GetOrderNumber(VDiskIDFromVDiskID(event->Record.GetVDiskID()));
                 Y_ABORT_UNLESS(orderNumber < WaitingVDiskResponseCount.size());
                 WaitingVDiskCount += !WaitingVDiskResponseCount[orderNumber]++;
-            }, event);
+            },
+            [&](const std::unique_ptr<TEvBlobStorage::TEvVMultiPut>& event) {
+                ui64 causeIdx = RootCauseTrack.RegisterCause();
+                if (!event->Record.HasCookie() && RootCauseTrack.IsOn) {
+                    event->Record.SetCookie(causeIdx);
+                }
+                const ui32 orderNumber = Info->GetOrderNumber(VDiskIDFromVDiskID(event->Record.GetVDiskID()));
+                Y_ABORT_UNLESS(orderNumber < WaitingVDiskResponseCount.size());
+                WaitingVDiskCount += !WaitingVDiskResponseCount[orderNumber]++;
+            },
+            [&](const std::unique_ptr<TEvBlobStorage::TEvVPutFlat>& event) {
+                ui64 causeIdx = RootCauseTrack.RegisterCause();
+                if (RootCauseTrack.IsOn) {
+                    event->SetCookieIfAbsent(causeIdx);
+                }
+                const ui32 orderNumber = Info->GetOrderNumber(event->GetVDiskID());
+                Y_ABORT_UNLESS(orderNumber < WaitingVDiskResponseCount.size());
+                WaitingVDiskCount += !WaitingVDiskResponseCount[orderNumber]++;
+            }}, event);
         }
     }
 

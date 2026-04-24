@@ -389,9 +389,12 @@ namespace NKikimr {
         bool IsSinglePut() const { return IsVersion<TSinglePutV1>(); }
         bool IsMultiPut() const { return IsVersion<TMultiPutV1>(); }
 
+        void SetSinglePutFlags(bool issueKeepFlag, bool ignoreBlock, bool isZeroEntry);
+        void AddSingleExtraBlockCheck(ui64 tabletId, ui32 generation);
         void AddVPut(const TLogoBlobID& logoBlobId, const TRcBuf& buffer, ui64 *cookie, bool issueKeepFlag,
             bool ignoreBlock, bool isZeroEntry, std::vector<std::pair<ui64, ui32>> *extraBlockChecks,
             NWilson::TTraceId traceId, bool checksumming);
+        void SetCookieIfAbsent(ui64 cookie);
 
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
         NKikimrBlobStorage::EPutHandleClass GetHandleClass() const {
@@ -402,6 +405,7 @@ namespace NKikimr {
         }
         ui64 GetBufferBytes() const;
         ui64 GetBufferBytes(ui64 idx) const;
+        ui64 GetItemsCount() const;
         TRope GetBuffer() const;
         TRope GetItemBuffer(ui64 itemIdx) const;
         ui64 GetSumBlobSize() const;
