@@ -262,6 +262,92 @@ public:
         History.AddVGetResult(std::move(vgetResult));
     }
 
+    void OnVGetResult(TLogContext &logCtx, TEvBlobStorage::TEvVGetResultFlat &ev,
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
+            TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
+        const NKikimrProto::EReplyStatus status = ev.GetStatus();
+        Y_ABORT_UNLESS(status != NKikimrProto::RACE && status != NKikimrProto::BLOCKED && status != NKikimrProto::DEADLINE);
+        DSP_LOG_DEBUG_SX(logCtx, "BPG68", "handle result# " << ev.ToString());
+
+        const TVDiskID vdisk = ev.GetVDiskID();
+        const TVDiskIdShort shortId(vdisk);
+        const ui32 orderNumber = Info->GetOrderNumber(shortId);
+        {
+            NActors::NLog::EPriority priority = PriorityForStatusInbound(status);
+            DSP_LOG_LOG_SX(logCtx, priority, "BPG69", "Handle TEvVGetResultFlat"
+                << " status# " << NKikimrProto::EReplyStatus_Name(status).data()
+                << " From# " << vdisk.ToString()
+                << " orderNumber# " << orderNumber
+                << " ev " << ev.ToString());
+        }
+
+        BlockedGeneration = Max(BlockedGeneration, ev.GetBlockedGeneration());
+
+        const TString errorReason = ev.GetErrorReason();
+        auto vgetResult = History.CreateVGetResult(orderNumber, status, errorReason);
+
+        Y_ABORT_UNLESS(ev.GetItemsCount() > 0, "ev# %s vdisk# %s", ev.ToString().data(), vdisk.ToString().data());
+        for (ui32 i = 0, e = ev.GetItemsCount(); i != e; ++i) {
+            const auto result = ev.GetItem(i);
+            NKikimrProto::EReplyStatus replyStatus = static_cast<NKikimrProto::EReplyStatus>(result.Status);
+            const TLogoBlobID blobId = NVDiskFlat::FromRaw(result.BlobId);
+
+            TRope resultBuffer = ev.GetBlobData(result);
+            const ui32 resultShift = result.Shift;
+
+            vgetResult.AddSubrequestResult(blobId, replyStatus, resultShift, resultBuffer.size());
+
+            if (ReportDetailedPartMap) {
+                Blackboard.ReportPartMapStatus(blobId, result.Cookie, ResponseIndex, replyStatus);
+            }
+
+            if (resultShift == 0 && resultBuffer.size() == Info->Type.PartSize(blobId)) {
+                bool isCrcOk = CheckCrcAtTheEnd((TErasureType::ECrcMode)blobId.CrcMode(), resultBuffer);
+                if (!isCrcOk) {
+                    DSP_LOG_ERROR_SX(logCtx, "BPG70", "Error in CheckCrcAtTheEnd on TEvVGetResultFlat, blobId# " << blobId
+                            << " resultShift# " << resultShift << " resultBuffer.Size()# " << resultBuffer.size());
+                    replyStatus = NKikimrProto::ERROR;
+                }
+            }
+
+            if (result.Flags.GetKeep() || result.Flags.GetDoNotKeep()) {
+                auto& [a, b] = BlobFlags[blobId.FullID()];
+                a |= result.Flags.GetKeep();
+                b |= result.Flags.GetDoNotKeep();
+            }
+
+            if (replyStatus == NKikimrProto::OK) {
+                DSP_LOG_DEBUG_SX(logCtx, "BPG71", "Got# OK orderNumber# " << orderNumber << " vDiskId# " << vdisk.ToString());
+                if (resultBuffer.GetOccupiedMemorySize() > resultBuffer.size() * 2) {
+                    resultBuffer.Compact();
+                }
+                Blackboard.AddResponseData(blobId, orderNumber, resultShift, std::move(resultBuffer));
+            } else if (replyStatus == NKikimrProto::NODATA) {
+                DSP_LOG_DEBUG_SX(logCtx, "BPG72", "Got# NODATA orderNumber# " << orderNumber
+                        << " vDiskId# " << vdisk.ToString());
+                Blackboard.AddNoDataResponse(blobId, orderNumber);
+            } else if (replyStatus == NKikimrProto::ERROR
+                    || replyStatus == NKikimrProto::VDISK_ERROR_STATE
+                    || replyStatus == NKikimrProto::CORRUPTED) {
+                DSP_LOG_DEBUG_SX(logCtx, "BPG73", "Got# " << NKikimrProto::EReplyStatus_Name(replyStatus).data()
+                    << " orderNumber# " << orderNumber << " vDiskId# " << vdisk.ToString());
+                Blackboard.AddErrorResponse(blobId, orderNumber, errorReason);
+            } else if (replyStatus == NKikimrProto::NOT_YET) {
+                DSP_LOG_DEBUG_SX(logCtx, "BPG74", "Got# NOT_YET orderNumber# " << orderNumber
+                        << " vDiskId# " << vdisk.ToString());
+                Blackboard.AddNotYetResponse(blobId, orderNumber);
+            } else {
+                Y_ABORT_UNLESS(false, "Unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(replyStatus).data());
+            }
+        }
+
+        ++ResponseIndex;
+
+        Step(logCtx, outVGets, outVPuts, outGetResult);
+        History.AddVGetResult(std::move(vgetResult));
+    }
+
     void OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVPutResult &ev,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,

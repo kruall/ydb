@@ -260,6 +260,66 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         SanityCheck(); // May Die
     }
 
+    void Handle(TEvBlobStorage::TEvVGetResultFlat::TPtr &ev) {
+        ProcessReplyFromQueue(ev->Get());
+
+        ui64 totalSize = 0;
+        ui64 tabletId = 0;
+        ui32 channel = 0;
+        for (ui32 i = 0; i < ev->Get()->GetItemsCount(); ++i) {
+            const auto queryResult = ev->Get()->GetItem(i);
+            if (ev->Get()->GetStatus() == NKikimrProto::OK) {
+                totalSize += ev->Get()->GetBlobSize(queryResult);
+            }
+            const TLogoBlobID blob = NVDiskFlat::FromRaw(queryResult.BlobId);
+            tabletId = blob.TabletID();
+            channel = blob.Channel();
+        }
+        ++GeneratedSubrequests;
+        GeneratedSubrequestBytes += totalSize;
+
+        const TVDiskID vdisk = ev->Get()->GetVDiskID();
+        const TVDiskIdShort shortId(vdisk);
+
+        LWTRACK(DSProxyVDiskRequestDuration, Orbit, TEvBlobStorage::EvVGetFlat, totalSize, tabletId, vdisk.GroupID.GetRawId(), channel,
+                Info->GetFailDomainOrderNumber(shortId),
+                0,
+                0,
+                0,
+                0,
+                NKikimrBlobStorage::EGetHandleClass_Name(GetImpl.GetHandleClass()),
+                NKikimrProto::EReplyStatus_Name(ev->Get()->GetStatus()));
+        if (RootCauseTrack.IsOn && ev->Get()->HasCookie()) {
+            RootCauseTrack.OnReply(ev->Get()->GetCookie(), 0, 0);
+        }
+
+        ui32 orderNumber = Info->GetOrderNumber(shortId);
+        if (DiskCounters.size() <= orderNumber) {
+            DiskCounters.resize(orderNumber + 1);
+        }
+        DiskCounters[orderNumber].Received++;
+
+        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
+        ResponsesReceived++;
+        TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
+        GetImpl.OnVGetResult(LogCtx, *ev->Get(), vGets, vPuts, getResult);
+        SendVGetsAndVPuts(vGets, vPuts);
+
+        if (getResult) {
+            SendReplyAndDie(getResult);
+            return;
+        }
+        Y_ABORT_UNLESS(RequestsSent > ResponsesReceived, "RequestsSent# %" PRIu32 " ResponsesReceived# %" PRIu32
+                " GetImpl.DumpFullState# %s", RequestsSent, ResponsesReceived, GetImpl.DumpFullState().c_str());
+
+        TryScheduleGetAcceleration();
+        if (IsPutStarted) {
+            TrySchedulePutAcceleration();
+        }
+        SanityCheck(); // May Die
+    }
+
     void SanityCheck() {
         if (RequestsSent <= MaxSaneRequests) {
             return;
@@ -514,6 +574,7 @@ public:
         }
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvBlobStorage::TEvVGetResult, Handle);
+            hFunc(TEvBlobStorage::TEvVGetResultFlat, Handle);
             hFunc(TEvBlobStorage::TEvVPutResult, Handle);
             hFunc(TEvAccelerateGet, Handle);
             hFunc(TEvAcceleratePut, Handle);

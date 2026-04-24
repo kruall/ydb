@@ -733,6 +733,10 @@ namespace NKikimr {
             return static_cast<NKikimrProto::EReplyStatus>(static_cast<ui32>(Field<TStatusTag>()));
         }
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
+        ui32 GetBlockedGeneration() const { return Field<TBlockedGenerationTag>(); }
+        TString GetErrorReason() const { return Bytes<TErrorReasonTag>().Materialize(); }
+        bool HasCookie() const { return static_cast<NVDiskFlat::TGetResultFlagsRaw>(Field<TFlagsTag>()).HasCookie(); }
+        ui64 GetCookie() const { return Field<TCookieTag>(); }
         ui64 GetItemsCount() const { return ArraySize<TItemsTag>(); }
         NVDiskFlat::TGetResultItemRaw GetItem(ui64 idx) const {
             auto items = Array<TItemsTag>();
