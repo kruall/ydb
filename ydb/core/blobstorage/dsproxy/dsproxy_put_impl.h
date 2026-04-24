@@ -357,6 +357,29 @@ public:
         History.AddVPutResult(std::move(vputResult));
     }
 
+    void ProcessResponse(TEvBlobStorage::TEvVPutResultFlat& msg) {
+        if (msg.IsSinglePutResult()) {
+            ++VPutResponses;
+            ProcessResponseCommonPart(msg);
+            const ui32 orderNumber = Info->GetOrderNumber(TVDiskIdShort(msg.GetVDiskID()));
+            ProcessResponseBlob(orderNumber, msg.GetBlobID(), msg.GetStatus(), msg.GetErrorReason(), false);
+            History.AddVPutResult(orderNumber, msg.GetStatus(), msg.GetErrorReason());
+        } else {
+            ++VMultiPutResponses;
+            ProcessResponseCommonPart(msg);
+            const ui32 orderNumber = Info->GetOrderNumber(TVDiskIdShort(msg.GetVDiskID()));
+            auto vputResult = History.CreateVPutResult(orderNumber, msg.GetStatus(), msg.GetErrorReason());
+            for (size_t i = 0; i < msg.GetItemsCount(); ++i) {
+                const auto item = msg.GetItem(i);
+                const TLogoBlobID blobId = NVDiskFlat::FromRaw(item.BlobId);
+                const auto status = static_cast<NKikimrProto::EReplyStatus>(item.Status);
+                ProcessResponseBlob(orderNumber, blobId, status, msg.GetItemErrorReason(item), item.Flags.GetWrittenBeyondBarrier());
+                vputResult.AddSubrequestResult(blobId, status);
+            }
+            History.AddVPutResult(std::move(vputResult));
+        }
+    }
+
     size_t GetBlobIdx(const TLogoBlobID& id) const {
         const auto it = BlobMap.find(id.FullID());
         Y_ABORT_UNLESS(it != BlobMap.end());
@@ -392,7 +415,14 @@ protected:
 
         const NKikimrProto::EReplyStatus status = record.GetStatus();
         const TLogoBlobID blobId = LogoBlobIDFromLogoBlobID(record.GetBlobID());
+        const TString errorReason = record.GetErrorReason();
+        const bool writtenBeyondBarrier = record.GetWrittenBeyondBarrier();
 
+        ProcessResponseBlob(orderNumber, blobId, status, errorReason, writtenBeyondBarrier);
+    }
+
+    void ProcessResponseBlob(ui32 orderNumber, const TLogoBlobID& blobId, NKikimrProto::EReplyStatus status,
+            const TString& errorReason, bool writtenBeyondBarrier) {
         const size_t blobIdx = GetBlobIdx(blobId);
 
         if (IsDone[blobIdx]) {
@@ -403,12 +433,12 @@ protected:
             case NKikimrProto::ERROR:
             case NKikimrProto::VDISK_ERROR_STATE:
             case NKikimrProto::OUT_OF_SPACE:
-                Blackboard.AddErrorResponse(blobId, orderNumber, record.GetErrorReason());
+                Blackboard.AddErrorResponse(blobId, orderNumber, errorReason);
                 break;
             case NKikimrProto::OK:
             case NKikimrProto::ALREADY:
                 Blackboard.AddPutOkResponse(blobId, orderNumber);
-                WrittenBeyondBarrier[blobIdx] = record.GetWrittenBeyondBarrier();
+                WrittenBeyondBarrier[blobIdx] = writtenBeyondBarrier;
                 break;
             default:
                 Y_ABORT("unexpected status# %s", NKikimrProto::EReplyStatus_Name(status).data());
@@ -428,6 +458,16 @@ protected:
             if (ApproximateFreeSpaceShare == 0.f || share < ApproximateFreeSpaceShare) {
                 ApproximateFreeSpaceShare = share;
             }
+        }
+    }
+
+    void ProcessResponseCommonPart(TEvBlobStorage::TEvVPutResultFlat& msg) {
+        const NKikimrProto::EReplyStatus status = msg.GetStatus();
+        Y_ABORT_UNLESS(status != NKikimrProto::RACE);
+        StatusFlags.Merge(msg.GetStatusFlags());
+        const float share = msg.GetApproximateFreeSpaceShare();
+        if (ApproximateFreeSpaceShare == 0.f || share < ApproximateFreeSpaceShare) {
+            ApproximateFreeSpaceShare = share;
         }
     }
 

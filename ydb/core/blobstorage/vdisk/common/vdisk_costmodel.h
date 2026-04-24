@@ -2,6 +2,7 @@
 
 #include "defs.h"
 #include "vdisk_events.h"
+#include "vdisk_flat_events.h"
 
 
 namespace NKikimr {
@@ -50,6 +51,8 @@ namespace NKikimr {
             TMessageCostEssence(const TEvBlobStorage::TEvVPut& ev);
 
             TMessageCostEssence(const TEvBlobStorage::TEvVMultiPut& ev);
+
+            TMessageCostEssence(const TEvBlobStorage::TEvVPutFlat& ev);
         };
 
     public:
@@ -77,6 +80,7 @@ namespace NKikimr {
         ui64 GetCost(const TEvBlobStorage::TEvVBlock &ev) const;
         ui64 GetCost(const TEvBlobStorage::TEvVCollectGarbage &ev) const;
         ui64 GetCost(const TEvBlobStorage::TEvVPut &ev) const;
+        ui64 GetCost(const TEvBlobStorage::TEvVPutFlat &ev) const;
 
         ui64 GetCost(const TEvBlobStorage::TEvVPatchStart &ev) const;
         ui64 GetCost(const TEvBlobStorage::TEvVPatchDiff &ev) const;
@@ -85,6 +89,7 @@ namespace NKikimr {
 
         ui64 GetCost(const TEvBlobStorage::TEvVPut &ev, bool *logPutInternalQueue) const;
         ui64 GetCost(const TEvBlobStorage::TEvVMultiPut &ev, bool *logPutInternalQueue) const;
+        ui64 GetCost(const TEvBlobStorage::TEvVPutFlat &ev, bool *logPutInternalQueue) const;
 
         /// LAZY EVALUATION
         ui64 CalculateCost(const TMessageCostEssence& essence) const;

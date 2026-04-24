@@ -63,6 +63,10 @@ struct TRequestMonGroup {
                 *VPutBlobsIssued += static_cast<TEvBlobStorage::TEvVMultiPut&>(*ev).Record.ItemsSize();
                 break;
 
+            case TEvBlobStorage::EvVPutFlat:
+                *VPutBlobsIssued += static_cast<TEvBlobStorage::TEvVPutFlat&>(*ev).GetItemsCount();
+                break;
+
             case TEvBlobStorage::EvVMovedPatch:
                 VMovedPatchBlobsIssued->Inc();
                 break;

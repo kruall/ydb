@@ -142,6 +142,7 @@ NActors::NLog::EPriority PriorityForStatusInbound(NKikimrProto::EReplyStatus sta
     XX(TEvBlobStorage::TEvVPatchXorDiff) \
     XX(TEvBlobStorage::TEvVPut) \
     XX(TEvBlobStorage::TEvVMultiPut) \
+    XX(TEvBlobStorage::TEvVPutFlat) \
     XX(TEvBlobStorage::TEvVGet) \
     XX(TEvBlobStorage::TEvVBlock) \
     XX(TEvBlobStorage::TEvVGetBlock) \
@@ -285,6 +286,7 @@ public:
 
     static TLogoBlobID GetBlobId(TEvBlobStorage::TEvVPut& ev);
     static TLogoBlobID GetBlobId(TEvBlobStorage::TEvVMultiPut& ev);
+    static TLogoBlobID GetBlobId(TEvBlobStorage::TEvVPutFlat& ev);
     static TLogoBlobID GetBlobId(TEvBlobStorage::TEvVMovedPatch& ev);
     static TLogoBlobID GetBlobId(TEvBlobStorage::TEvVPatchStart& ev);
     static TLogoBlobID GetBlobId(TEvBlobStorage::TEvVPatchDiff& ev);

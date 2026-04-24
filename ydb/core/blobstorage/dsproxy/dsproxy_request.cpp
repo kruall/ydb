@@ -891,6 +891,15 @@ namespace NKikimr {
         return LogoBlobIDFromLogoBlobID(ev.Record.GetItems(0).GetBlobID());
     }
 
+    TLogoBlobID TBlobStorageGroupRequestActor::GetBlobId(TEvBlobStorage::TEvVPutFlat &ev) {
+        if (ev.IsSinglePut()) {
+            return NVDiskFlat::FromRaw(ev.Field<TEvBlobStorage::TEvVPutFlat::TBlobIdTag>());
+        }
+        auto items = ev.GetFrontend<TEvBlobStorage::TEvVPutFlat::TMultiPutV1>().template Array<TEvBlobStorage::TEvVPutFlat::TItemsTag>();
+        Y_ABORT_UNLESS(items.size());
+        return NVDiskFlat::FromRaw(items.Get(0).BlobId);
+    }
+
     TLogoBlobID TBlobStorageGroupRequestActor::GetBlobId(TEvBlobStorage::TEvVMovedPatch &ev) {
         Y_ABORT_UNLESS(ev.Record.HasPatchedBlobId());
         return LogoBlobIDFromLogoBlobID(ev.Record.GetPatchedBlobId());
@@ -1062,17 +1071,21 @@ namespace NKikimr {
         NKikimrBlobStorage::EVDiskQueueId queueId;
 
         auto preprocess = [&](auto& ev) {
-            Y_DEBUG_ABORT_UNLESS(ev.Record.HasVDiskID());
-            vdiskId = VDiskIDFromVDiskID(ev.Record.GetVDiskID());
-
             using T = std::decay_t<decltype(ev)>;
+            if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
+                vdiskId = ev.GetVDiskID();
+            } else {
+                Y_DEBUG_ABORT_UNLESS(ev.Record.HasVDiskID());
+                vdiskId = VDiskIDFromVDiskID(ev.Record.GetVDiskID());
+            }
 
             if constexpr (!std::is_same_v<T, TEvBlobStorage::TEvVGetBlock> &&
                     !std::is_same_v<T, TEvBlobStorage::TEvVBlock> &&
                     !std::is_same_v<T, TEvBlobStorage::TEvVStatus> &&
                     !std::is_same_v<T, TEvBlobStorage::TEvVCollectGarbage> &&
                     !std::is_same_v<T, TEvBlobStorage::TEvVAssimilate> &&
-                    !std::is_same_v<T, TEvBlobStorage::TEvVGetBarrier>) {
+                    !std::is_same_v<T, TEvBlobStorage::TEvVGetBarrier> &&
+                    !std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
                 const ui64 cyclesPerUs = NHPTimer::GetCyclesPerSecond() / 1000000;
                 ev.Record.MutableTimestamps()->SetSentByDSProxyUs(GetCycleCountFast() / cyclesPerUs);
             }
@@ -1081,7 +1094,10 @@ namespace NKikimr {
                     !std::is_same_v<T, TEvBlobStorage::TEvVAssimilate>) {
                 ev.MessageRelevanceTracker = TMessageRelevance(RelevanceOwner, ExternalRelevanceWatcher);
                 ui64 cost;
-                if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVMultiPut>) {
+                if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
+                    bool internalQueue;
+                    cost = CostModel->GetCost(ev, &internalQueue);
+                } else if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVMultiPut>) {
                     bool internalQueue;
                     cost = CostModel->GetCost(ev, &internalQueue);
                 } else {
@@ -1095,6 +1111,7 @@ namespace NKikimr {
 
             if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPut> ||
                     std::is_same_v<T, TEvBlobStorage::TEvVMultiPut> ||
+                    std::is_same_v<T, TEvBlobStorage::TEvVPutFlat> ||
                     std::is_same_v<T, TEvBlobStorage::TEvVPatchDiff> ||
                     std::is_same_v<T, TEvBlobStorage::TEvVMovedPatch> ||
                     std::is_same_v<T, TEvBlobStorage::TEvVPatchStart>) {
@@ -1105,7 +1122,8 @@ namespace NKikimr {
 
             if (timeStatsEnabled) {
                 if constexpr (!std::is_same_v<T, TEvBlobStorage::TEvVStatus> &&
-                        !std::is_same_v<T, TEvBlobStorage::TEvVAssimilate>) {
+                        !std::is_same_v<T, TEvBlobStorage::TEvVAssimilate> &&
+                        !std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
                     const TInstant now = TAppData::TimeProvider->Now();
                     ev.Record.MutableMsgQoS()->MutableExecTimeStats()->SetSubmitTimestamp(now.GetValue());
                 }

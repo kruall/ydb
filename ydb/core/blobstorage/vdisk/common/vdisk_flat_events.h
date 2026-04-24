@@ -498,6 +498,17 @@ namespace NKikimr {
         NKikimrProto::EReplyStatus GetStatus() const {
             return static_cast<NKikimrProto::EReplyStatus>(static_cast<ui32>(Field<TStatusTag>()));
         }
+        TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
+        TLogoBlobID GetBlobID() const { return NVDiskFlat::FromRaw(GetFrontend<TSinglePutResultV1>().template Field<TBlobIdTag>()); }
+        ui32 GetStatusFlags() const { return Field<TStatusFlagsTag>(); }
+        float GetApproximateFreeSpaceShare() const { return Field<TFreeSpaceShareTag>(); }
+        ui64 GetIncarnationGuid() const { return Field<TIncarnationGuidTag>(); }
+        bool HasCookie() const { return static_cast<NVDiskFlat::TPutResultFlagsRaw>(Field<TFlagsTag>()).HasCookie(); }
+        ui64 GetCookie() const { return Field<TCookieTag>(); }
+        size_t GetItemsCount() const;
+        NVDiskFlat::TPutResultItemRaw GetItem(size_t index) const;
+        TString GetErrorReason() const { return Bytes<TErrorReasonTag>().Materialize(); }
+        TString GetItemErrorReason(const NVDiskFlat::TPutResultItemRaw& item) const;
         TString ToString() const override;
     };
 

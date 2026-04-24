@@ -442,6 +442,82 @@ class TBlobStorageGroupPutRequest : public TBlobStorageGroupRequestActor {
         SanityCheck(); // May Die
     }
 
+    void Handle(TEvBlobStorage::TEvVPutResultFlat::TPtr &ev) {
+        ProcessReplyFromQueue(ev->Get());
+        ResponsesReceived++;
+        if (!AccelerateRequestsSent) {
+            Y_DEBUG_ABORT_UNLESS(RequestsPendingBeforeAcceleration > 0);
+            RequestsPendingBeforeAcceleration--;
+        }
+
+        auto *msg = ev->Get();
+        const TVDiskID vdiskId = msg->GetVDiskID();
+        const TVDiskIdShort shortId(vdiskId);
+        const ui32 vdisk = Info->GetOrderNumber(shortId);
+        const NKikimrProto::EReplyStatus status = msg->GetStatus();
+
+        if (msg->GetIncarnationGuid()) {
+            HandleIncarnation(TActivationContext::Monotonic(), vdisk, msg->GetIncarnationGuid());
+        }
+
+        auto prio = status == NKikimrProto::OK ? NLog::PRI_DEBUG : NLog::PRI_INFO;
+        if (status == NKikimrProto::OK && msg->IsMultiPutResult()) {
+            for (size_t i = 0; i < msg->GetItemsCount(); ++i) {
+                if (msg->GetItem(i).Status != NKikimrProto::OK) {
+                    prio = NLog::PRI_INFO;
+                    break;
+                }
+            }
+        }
+        DSP_LOG_LOG_S(prio, "BPP73", "received " << msg->ToString() << " from# " << vdiskId);
+
+        Y_ABORT_UNLESS(vdisk < WaitingVDiskResponseCount.size(), " vdisk# %" PRIu32, vdisk);
+        if (WaitingVDiskResponseCount[vdisk] == 1) {
+            WaitingVDiskCount--;
+        }
+        WaitingVDiskResponseCount[vdisk]--;
+
+        if (RootCauseTrack.IsOn && msg->HasCookie()) {
+            RootCauseTrack.OnReply(msg->GetCookie(), 0, 0);
+        }
+
+        if (CheckForExternalCancellation()) {
+            return;
+        }
+
+        TPutImpl::TPutResultVec putResults;
+        if (msg->IsSinglePutResult()) {
+            const TLogoBlobID blobId = msg->GetBlobID();
+            const size_t blobIdx = PutImpl.GetBlobIdx(blobId);
+            if (status == NKikimrProto::BLOCKED || status == NKikimrProto::DEADLINE) {
+                TString error = TStringBuilder() << "Got VPutResultFlat status# " << status << " from VDiskId# " << vdiskId;
+                PutImpl.PrepareOneReply(status, blobIdx, LogCtx, std::move(error), putResults);
+            }
+        } else {
+            for (size_t i = 0; i < msg->GetItemsCount(); ++i) {
+                const auto item = msg->GetItem(i);
+                const auto itemStatus = static_cast<NKikimrProto::EReplyStatus>(item.Status);
+                Y_ABORT_UNLESS(itemStatus != NKikimrProto::RACE);
+                if (itemStatus == NKikimrProto::BLOCKED || itemStatus == NKikimrProto::DEADLINE) {
+                    const TLogoBlobID blobId = NVDiskFlat::FromRaw(item.BlobId);
+                    const size_t blobIdx = PutImpl.GetBlobIdx(blobId);
+                    ErrorReason = TStringBuilder() << "Got VPutResultFlat itemStatus# " << itemStatus << " from VDiskId# " << vdiskId;
+                    PutImpl.PrepareOneReply(itemStatus, blobIdx, LogCtx, ErrorReason, putResults);
+                }
+            }
+        }
+        if (ReplyAndDieWithLastResponse(putResults)) {
+            return;
+        }
+
+        PutImpl.ProcessResponse(*msg);
+        if (Action()) {
+            return;
+        }
+        TryToScheduleNextAcceleration();
+        SanityCheck();
+    }
+
     void TryToScheduleNextAcceleration() {
         if (!IsAccelerateScheduled && AccelerateRequestsSent < AccelerationParams.MaxNumOfSlowDisks) {
             if (WaitingVDiskCount > 0 && WaitingVDiskCount <= AccelerationParams.MaxNumOfSlowDisks && RequestsSent > 1) {
@@ -980,6 +1056,7 @@ public:
             hFunc(TEvBlobStorage::TEvVStatusResult, Handle);
             hFunc(TEvBlobStorage::TEvVPutResult, Handle);
             hFunc(TEvBlobStorage::TEvVMultiPutResult, Handle);
+            hFunc(TEvBlobStorage::TEvVPutResultFlat, Handle);
             hFunc(TEvAccelerate, Handle);
             cFunc(TEvBlobStorage::EvResume, ResumeBootstrap);
             cFunc(TEvents::TSystem::Wakeup, HandleWakeup);

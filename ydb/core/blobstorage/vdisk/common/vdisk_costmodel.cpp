@@ -93,6 +93,16 @@ namespace NKikimr {
         }
     }
 
+    TCostModel::TMessageCostEssence::TMessageCostEssence(const TEvBlobStorage::TEvVPutFlat& ev)
+        : HandleClass(ev.GetHandleClass())
+    {
+        const ui64 itemsSize = ev.GetItemsCount();
+        PutBufferSizes.reserve(itemsSize);
+        for (ui64 idx = 0; idx < itemsSize; ++idx) {
+            PutBufferSizes.push_back(ev.IsSinglePut() ? ev.GetBufferBytes() : ev.GetBufferBytes(idx));
+        }
+    }
+
     TCostModel::TCostModel(ui64 seekTimeUs, ui64 readSpeedBps, ui64 writeSpeedBps, ui64 readBlockSize,
                            ui64 writeBlockSize, ui32 minHugeBlobInBytes, TBlobStorageGroupType gType)
         : SeekTimeUs(seekTimeUs)
@@ -154,6 +164,11 @@ namespace NKikimr {
         return GetCost(ev, &logPutInternalQueue);
     }
 
+    ui64 TCostModel::GetCost(const TEvBlobStorage::TEvVPutFlat &ev) const {
+        bool logPutInternalQueue = true;
+        return GetCost(ev, &logPutInternalQueue);
+    }
+
     // PATCHES
     ui64 TCostModel::GetCost(const TEvBlobStorage::TEvVPatchStart &) const {
         return InMemReadCost();
@@ -197,6 +212,24 @@ namespace NKikimr {
         ui64 cost = 0;
         for (ui64 idx = 0; idx < record.ItemsSize(); ++idx) {
             const ui64 size = ev.GetBufferBytes(idx);
+            NPriPut::EHandleType handleType = NPriPut::HandleType(MinHugeBlobInBytes, handleClass, size);
+            if (handleType == NPriPut::Log) {
+                cost += SmallWriteCost(size);
+            } else {
+                *logPutInternalQueue = false;
+                cost += HugeWriteCost(size);
+            }
+        }
+        return cost;
+    }
+
+    ui64 TCostModel::GetCost(const TEvBlobStorage::TEvVPutFlat &ev, bool *logPutInternalQueue) const {
+        const NKikimrBlobStorage::EPutHandleClass handleClass = ev.GetHandleClass();
+        *logPutInternalQueue = true;
+        ui64 cost = 0;
+        const ui64 itemsSize = ev.GetItemsCount();
+        for (ui64 idx = 0; idx < itemsSize; ++idx) {
+            const ui64 size = ev.IsSinglePut() ? ev.GetBufferBytes() : ev.GetBufferBytes(idx);
             NPriPut::EHandleType handleType = NPriPut::HandleType(MinHugeBlobInBytes, handleClass, size);
             if (handleType == NPriPut::Log) {
                 cost += SmallWriteCost(size);

@@ -316,6 +316,26 @@ namespace NKikimr {
         frontend.template Bytes<TErrorReasonTag>().Append(TRope(errorReason));
     }
 
+    size_t TEvBlobStorage::TEvVPutResultFlat::GetItemsCount() const {
+        if (IsSinglePutResult()) {
+            return 1;
+        }
+        return GetFrontend<TMultiPutResultV1>().template ArraySize<TItemsTag>();
+    }
+
+    NVDiskFlat::TPutResultItemRaw TEvBlobStorage::TEvVPutResultFlat::GetItem(size_t index) const {
+        Y_ENSURE(IsMultiPutResult(), "GetItem is only available for TEvVPutResultFlat multi-put result scheme");
+        auto items = GetFrontend<TMultiPutResultV1>().template Array<TItemsTag>();
+        Y_ENSURE(index < items.size(), "Put result item index is out of range");
+        return items.Get(index);
+    }
+
+    TString TEvBlobStorage::TEvVPutResultFlat::GetItemErrorReason(const NVDiskFlat::TPutResultItemRaw& item) const {
+        const TString errors = GetErrorReason();
+        Y_ENSURE(item.ErrorReasonOffset + item.ErrorReasonSize <= errors.size(), "Put result item error reason is out of range");
+        return errors.substr(item.ErrorReasonOffset, item.ErrorReasonSize);
+    }
+
     TString TEvBlobStorage::TEvVPutResultFlat::ToString() const {
         TStringStream str;
         str << "{EvVPutResultFlat Status# " << NKikimrProto::EReplyStatus_Name(GetStatus());
