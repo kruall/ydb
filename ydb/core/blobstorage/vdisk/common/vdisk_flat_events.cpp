@@ -508,6 +508,31 @@ namespace NKikimr {
         }
     }
 
+    ui64 TEvBlobStorage::TEvVGetFlat::GetExtremeQueriesCount() const {
+        Y_ENSURE(IsExtremeQuery(), "GetExtremeQueriesCount is only available for TEvVGetFlat extreme query schemes");
+        return IsExtremeIndexQuery()
+            ? GetFrontend<TExtremeIndexV1>().template ArraySize<TExtremeQueriesTag>()
+            : GetFrontend<TExtremeDataV1>().template ArraySize<TExtremeQueriesTag>();
+    }
+
+    NVDiskFlat::TExtremeQueryRaw TEvBlobStorage::TEvVGetFlat::GetExtremeQuery(ui64 idx) const {
+        Y_ENSURE(IsExtremeQuery(), "GetExtremeQuery is only available for TEvVGetFlat extreme query schemes");
+        if (IsExtremeIndexQuery()) {
+            auto queries = GetFrontend<TExtremeIndexV1>().template Array<TExtremeQueriesTag>();
+            Y_ENSURE(idx < queries.size(), "Extreme query index is out of range");
+            return queries.Get(idx);
+        } else {
+            auto queries = GetFrontend<TExtremeDataV1>().template Array<TExtremeQueriesTag>();
+            Y_ENSURE(idx < queries.size(), "Extreme query index is out of range");
+            return queries.Get(idx);
+        }
+    }
+
+    NVDiskFlat::TRangeQueryRaw TEvBlobStorage::TEvVGetFlat::GetRangeQuery() const {
+        Y_ENSURE(IsRangeIndexQuery(), "GetRangeQuery is only available for TEvVGetFlat range query scheme");
+        return GetFrontend<TRangeIndexV1>().template Field<TRangeQueryTag>();
+    }
+
     bool TEvBlobStorage::TEvVGetFlat::Validate(TString& errorReason) const {
         if (IsExtremeQuery()) {
             const size_t queries = IsExtremeIndexQuery()

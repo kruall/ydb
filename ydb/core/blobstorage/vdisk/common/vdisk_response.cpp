@@ -39,6 +39,11 @@ void SendVDiskResponse(const TActorContext &ctx, const TActorId &recipient, IEve
                 }
                 HANDLE_EVENT(TEvBlobStorage::TEvVMultiPutResult)
                 HANDLE_EVENT(TEvBlobStorage::TEvVGetResult)
+                case TEvBlobStorage::TEvVGetResultFlat::EventType: {
+                    auto *event = static_cast<TEvBlobStorage::TEvVGetResultFlat *>(ev);
+                    ReportResponse(*event, handleClass, vCtx);
+                    break;
+                }
                 HANDLE_EVENT(TEvBlobStorage::TEvVGetBlockResult)
                 HANDLE_EVENT(TEvBlobStorage::TEvVCollectGarbageResult)
 #undef HANDLE_EVENT
@@ -56,6 +61,7 @@ void SendVDiskResponse(const TActorContext &ctx, const TActorId &recipient, IEve
 
         HANDLE_EVENT(TEvVPutResult)
         case TEvBlobStorage::EvVPutResultFlat:
+        case TEvBlobStorage::EvVGetResultFlat:
             break;
         HANDLE_EVENT(TEvVMultiPutResult)
         HANDLE_EVENT(TEvVGetResult)
@@ -73,10 +79,19 @@ void SendVDiskResponse(const TActorContext &ctx, const TActorId &recipient, IEve
     auto event = std::make_unique<IEventHandle>(recipient, ctx.SelfID, ev, IEventHandle::MakeFlags(channel, 0), cookie);
     if (TEvVResultBase *base = dynamic_cast<TEvVResultBase *>(ev)) {
         base->FinalizeAndSend(ctx, std::move(event));
-    } else if (ev->Type() == TEvBlobStorage::EvVPutResultFlat) {
-        auto *result = static_cast<TEvBlobStorage::TEvVPutResultFlat *>(ev);
-        if (result->SkeletonFrontIDPtr && result->MsgCtx) {
-            ctx.Send(*result->SkeletonFrontIDPtr, new TEvVDiskRequestCompleted(*result->MsgCtx, std::move(event)));
+    } else if (ev->Type() == TEvBlobStorage::EvVPutResultFlat || ev->Type() == TEvBlobStorage::EvVGetResultFlat) {
+        auto getContext = [&]() -> std::pair<TActorIDPtr, std::shared_ptr<TVMsgContext>> {
+            if (ev->Type() == TEvBlobStorage::EvVPutResultFlat) {
+                auto *result = static_cast<TEvBlobStorage::TEvVPutResultFlat *>(ev);
+                return {result->SkeletonFrontIDPtr, result->MsgCtx};
+            } else {
+                auto *result = static_cast<TEvBlobStorage::TEvVGetResultFlat *>(ev);
+                return {result->SkeletonFrontIDPtr, result->MsgCtx};
+            }
+        };
+        const auto [skeletonFrontIDPtr, msgCtx] = getContext();
+        if (skeletonFrontIDPtr && msgCtx) {
+            ctx.Send(*skeletonFrontIDPtr, new TEvVDiskRequestCompleted(*msgCtx, std::move(event)));
         } else {
             TActivationContext::Send(event.release());
         }
@@ -136,6 +151,7 @@ struct TReportingResponseStatus {
         NKikimrBlobStorage::TEvVMultiPutResult,
         TEvBlobStorage::TEvVPutResultFlat,
         NKikimrBlobStorage::TEvVGetResult,
+        TEvBlobStorage::TEvVGetResultFlat,
         NKikimrBlobStorage::TEvVGetBlockResult,
         NKikimrBlobStorage::TEvVCollectGarbageResult>;
 

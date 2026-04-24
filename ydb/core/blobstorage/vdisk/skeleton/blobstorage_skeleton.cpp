@@ -1277,6 +1277,20 @@ namespace NKikimr {
             SendVDiskResponse(ctx, ev->Sender, res.release(), ev->Cookie, VCtx, ev->Get()->Record.GetHandleClass());
         }
 
+        void ReplyError(NKikimrProto::EReplyStatus status, const TString& errorReason, TEvBlobStorage::TEvVGetFlat::TPtr &ev,
+                        const TActorContext &ctx, const TInstant &now) {
+            using namespace NErrBuilder;
+            std::unique_ptr<IEventBase> res(ErroneousResult(VCtx, status, errorReason, ev, now, SkeletonFrontIDPtr, SelfVDiskId,
+                    Db->GetVDiskIncarnationGuid(), GInfo));
+            SendVDiskResponse(ctx, ev->Sender, res.release(), ev->Cookie, VCtx, ev->Get()->GetHandleClass());
+        }
+
+        void Handle(TEvBlobStorage::TEvVGetFlat::TPtr &ev, const TActorContext &ctx) {
+            IFaceMonGroup->GetMsgs()++;
+            ReplyError(NKikimrProto::ERROR, "TEvVGetFlat is not implemented in VDisk query actor", ev, ctx,
+                TAppData::TimeProvider->Now());
+        }
+
         void Handle(TEvBlobStorage::TEvVGet::TPtr &ev, const TActorContext &ctx) {
             IFaceMonGroup->GetMsgs()++;
             TInstant now = TAppData::TimeProvider->Now();
@@ -3275,6 +3289,7 @@ namespace NKikimr {
             HFunc(TEvDelLogoBlobDataSyncLog, Handle)
             HFunc(TEvAddBulkSst, Handle)
             HFunc(TEvBlobStorage::TEvVGet, Handle)
+            HFunc(TEvBlobStorage::TEvVGetFlat, Handle)
             HFunc(TEvBlobStorage::TEvVBlock, Handle)
             HFunc(TEvBlobStorage::TEvVGetBlock, Handle)
             HFunc(TEvBlobStorage::TEvVCollectGarbage, Handle)

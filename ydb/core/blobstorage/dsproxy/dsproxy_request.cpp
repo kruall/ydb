@@ -116,6 +116,7 @@ namespace NKikimr {
                         .NodeLayout = TNodeLayoutInfoPtr(NodeLayoutInfo),
                         .AccelerationParams = GetAccelerationParams(),
                         .LongRequestThreshold = TDuration::MilliSeconds(Controls.LongRequestThresholdMs.Update(TActivationContext::Now())),
+                        .EnableVDiskFlatEvents = static_cast<bool>(Controls.EnableVDiskFlatEvents.Update(TActivationContext::Now())),
                     }),
                     ev->Get()->Deadline
                 );
@@ -1072,7 +1073,8 @@ namespace NKikimr {
 
         auto preprocess = [&](auto& ev) {
             using T = std::decay_t<decltype(ev)>;
-            if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
+            if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPutFlat> ||
+                    std::is_same_v<T, TEvBlobStorage::TEvVGetFlat>) {
                 vdiskId = ev.GetVDiskID();
             } else {
                 Y_DEBUG_ABORT_UNLESS(ev.Record.HasVDiskID());
@@ -1085,7 +1087,8 @@ namespace NKikimr {
                     !std::is_same_v<T, TEvBlobStorage::TEvVCollectGarbage> &&
                     !std::is_same_v<T, TEvBlobStorage::TEvVAssimilate> &&
                     !std::is_same_v<T, TEvBlobStorage::TEvVGetBarrier> &&
-                    !std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
+                    !std::is_same_v<T, TEvBlobStorage::TEvVPutFlat> &&
+                    !std::is_same_v<T, TEvBlobStorage::TEvVGetFlat>) {
                 const ui64 cyclesPerUs = NHPTimer::GetCyclesPerSecond() / 1000000;
                 ev.Record.MutableTimestamps()->SetSentByDSProxyUs(GetCycleCountFast() / cyclesPerUs);
             }
@@ -1123,7 +1126,8 @@ namespace NKikimr {
             if (timeStatsEnabled) {
                 if constexpr (!std::is_same_v<T, TEvBlobStorage::TEvVStatus> &&
                         !std::is_same_v<T, TEvBlobStorage::TEvVAssimilate> &&
-                        !std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
+                        !std::is_same_v<T, TEvBlobStorage::TEvVPutFlat> &&
+                        !std::is_same_v<T, TEvBlobStorage::TEvVGetFlat>) {
                     const TInstant now = TAppData::TimeProvider->Now();
                     ev.Record.MutableMsgQoS()->MutableExecTimeStats()->SetSubmitTimestamp(now.GetValue());
                 }

@@ -33,6 +33,26 @@ namespace NKikimr {
         }
     }
 
+    TCostModel::TMessageCostEssence::TMessageCostEssence(const TEvBlobStorage::TEvVGetFlat& ev) {
+        if (ev.IsRangeIndexQuery()) {
+            if (ev.GetFlags().GetIndexOnly()) {
+                BaseCost += InMemReadCost();
+            } else {
+                BaseCost += 10000000;
+            }
+        }
+
+        if (ev.IsExtremeQuery()) {
+            const ui64 itemsSize = ev.GetExtremeQueriesCount();
+            ReadSizes.reserve(itemsSize);
+            for (ui64 idx = 0; idx < itemsSize; ++idx) {
+                const auto x = ev.GetExtremeQuery(idx);
+                const ui64 size = x.Size ? x.Size : NVDiskFlat::FromRaw(x.BlobId).BlobSize();
+                ReadSizes.push_back(size);
+            }
+        }
+    }
+
     TCostModel::TMessageCostEssence::TMessageCostEssence(const TEvBlobStorage::TEvVGetBlock& /*ev*/)
         : BaseCost(TCostModel::InMemReadCost(EInMemType::Read))
     {}
@@ -135,6 +155,10 @@ namespace NKikimr {
 
     /// READS
     ui64 TCostModel::GetCost(const TEvBlobStorage::TEvVGet &ev) const {
+        return ReadCost(ev);
+    }
+
+    ui64 TCostModel::GetCost(const TEvBlobStorage::TEvVGetFlat &ev) const {
         return ReadCost(ev);
     }
 
@@ -279,6 +303,30 @@ namespace NKikimr {
             }
 
             cost += ReadCostBySize(size);
+        }
+
+        Y_DEBUG_ABORT_UNLESS(cost);
+        return cost;
+    }
+
+    ui64 TCostModel::ReadCost(const TEvBlobStorage::TEvVGetFlat &ev) const {
+        ui64 cost = 0;
+
+        if (ev.IsRangeIndexQuery()) {
+            if (ev.GetFlags().GetIndexOnly()) {
+                cost += InMemReadCost();
+            } else {
+                cost += 1000ull * SeekTimeUs + 2'000'000ull * 1'000'000'000 / ReadSpeedBps;
+            }
+        }
+
+        if (ev.IsExtremeQuery()) {
+            const ui64 itemsSize = ev.GetExtremeQueriesCount();
+            for (ui64 idx = 0; idx < itemsSize; ++idx) {
+                const auto x = ev.GetExtremeQuery(idx);
+                const ui64 size = x.Size ? x.Size : NVDiskFlat::FromRaw(x.BlobId).BlobSize();
+                cost += ReadCostBySize(size);
+            }
         }
 
         Y_DEBUG_ABORT_UNLESS(cost);

@@ -31,6 +31,7 @@ namespace NKikimr {
 
         public:
             TMessageCostEssence(const TEvBlobStorage::TEvVGet& ev);
+            TMessageCostEssence(const TEvBlobStorage::TEvVGetFlat& ev);
 
             TMessageCostEssence(const TEvBlobStorage::TEvVGetBlock& /*ev*/);
 
@@ -73,6 +74,7 @@ namespace NKikimr {
 
         /// READS
         ui64 GetCost(const TEvBlobStorage::TEvVGet &ev) const;
+        ui64 GetCost(const TEvBlobStorage::TEvVGetFlat &ev) const;
         ui64 GetCost(const TEvBlobStorage::TEvVGetBlock &ev) const;
         ui64 GetCost(const TEvBlobStorage::TEvVGetBarrier &ev) const;
 
@@ -138,6 +140,7 @@ namespace NKikimr {
         ui64 MovedPatchCostBySize(ui32 blobSize) const;
         ui64 ReadCostBySize(ui64 size) const;
         ui64 ReadCost(const TEvBlobStorage::TEvVGet &ev) const;
+        ui64 ReadCost(const TEvBlobStorage::TEvVGetFlat &ev) const;
 
     public:
         TString ToString() const;

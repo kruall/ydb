@@ -357,6 +357,22 @@ namespace NKikimr {
         }
 
         static inline std::unique_ptr<IEventBase>
+        ErroneousResult(const TVDiskContextPtr &vctx, const NKikimrProto::EReplyStatus status, const TString& errorReason,
+                        TEvBlobStorage::TEvVGetFlat::TPtr &ev, const TInstant &/*now*/,
+                        const TActorIDPtr &/*skeletonFrontIDPtr*/,
+                        const TVDiskID &/*vdiskID*/, ui64 vdiskIncarnationGuid,
+                        const TIntrusivePtr<TBlobStorageGroupInfo>& /*groupInfo*/)
+        {
+            auto result = std::unique_ptr<TEvBlobStorage::TEvVGetResultFlat>(
+                TEvBlobStorage::TEvVGetResultFlat::Make(status, ev->Get()->GetVDiskID(), Nothing(), vdiskIncarnationGuid));
+            result->MakeError(status, errorReason, *ev->Get());
+            result->MsgCtx = ev->Get()->MsgCtx;
+            result->SkeletonFrontIDPtr = ev->Get()->SkeletonFrontIDPtr;
+            Y_UNUSED(vctx);
+            return result;
+        }
+
+        static inline std::unique_ptr<IEventBase>
         ErroneousResult(const TVDiskContextPtr &vctx, const NKikimrProto::EReplyStatus status, const TString& /*errorReason*/,
                         TEvBlobStorage::TEvVGet::TPtr &ev, const TInstant &now, const TActorIDPtr &skeletonFrontIDPtr,
                         const TVDiskID &vdiskID, ui64 vdiskIncarnationGuid,

@@ -22,6 +22,7 @@ class TGetImpl {
     const bool CollectDebugInfo;
     const bool MustRestoreFirst;
     const bool ReportDetailedPartMap;
+    const bool EnableVDiskFlatEvents;
     std::optional<TEvBlobStorage::TEvGet::TForceBlockTabletData> ForceBlockTabletData;
 
     ui64 ReplyBytes = 0;
@@ -60,7 +61,8 @@ class TGetImpl {
 public:
     TGetImpl(const TIntrusivePtr<TBlobStorageGroupInfo> &info, const TIntrusivePtr<TGroupQueues> &groupQueues,
             TEvBlobStorage::TEvGet *ev, TNodeLayoutInfoPtr&& nodeLayout,
-            const TAccelerationParams& accelerationParams, const TString& requestPrefix = {})
+            const TAccelerationParams& accelerationParams, bool enableVDiskFlatEvents = false,
+            const TString& requestPrefix = {})
         : Deadline(ev->Deadline)
         , Info(info)
         , Queries(ev->Queries.Release())
@@ -71,6 +73,7 @@ public:
         , CollectDebugInfo(ev->CollectDebugInfo)
         , MustRestoreFirst(ev->MustRestoreFirst)
         , ReportDetailedPartMap(ev->ReportDetailedPartMap)
+        , EnableVDiskFlatEvents(enableVDiskFlatEvents)
         , ForceBlockTabletData(ev->ForceBlockTabletData)
         , Blackboard(info, groupQueues, NKikimrBlobStorage::AsyncBlob, ev->GetHandleClass)
         , RequestPrefix(requestPrefix)

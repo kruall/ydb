@@ -211,6 +211,29 @@ public:
         return cost;
     }
 
+    ui64 GetCost(const TEvBlobStorage::TEvVGetFlat& ev) const {
+        ui64 cost = 0;
+
+        if (ev.IsRangeIndexQuery()) {
+            if (ev.GetFlags().GetIndexOnly()) {
+                cost += MemoryOperationCost();
+            } else {
+                cost += DeviceSeekTimeNs + 2'000'000ull * 1'000'000'000 / DeviceReadSpeedBps;
+            }
+        }
+
+        if (ev.IsExtremeQuery()) {
+            const ui64 itemsSize = ev.GetExtremeQueriesCount();
+            for (ui64 idx = 0; idx < itemsSize; ++idx) {
+                const auto x = ev.GetExtremeQuery(idx);
+                const ui64 size = x.Size ? x.Size : NVDiskFlat::FromRaw(x.BlobId).BlobSize();
+                cost += ReadCost(size);
+            }
+        }
+
+        return cost;
+    }
+
     ui64 GetCost(const TEvBlobStorage::TEvVGetBlock&/* ev*/) const {
         return MemoryOperationCost();
     }

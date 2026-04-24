@@ -76,6 +76,10 @@ namespace NKikimr {
                     return event.GetExtQueueId();
                 }
 
+                static NKikimrBlobStorage::EVDiskQueueId VDiskQueueId(const TEvBlobStorage::TEvVGetFlat& event) {
+                    return event.GetExtQueueId();
+                }
+
                 static NKikimrBlobStorage::EVDiskQueueId VDiskQueueId(NKikimrBlobStorage::EPutHandleClass hc) {
                     switch (hc) {
                         case NKikimrBlobStorage::EPutHandleClass::TabletLog:

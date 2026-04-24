@@ -618,6 +618,8 @@ namespace NKikimr {
         };
 
         mutable NLWTrace::TOrbit Orbit;
+        std::shared_ptr<TVMsgContext> MsgCtx;
+        TActorIDPtr SkeletonFrontIDPtr;
         bool IsInternal = false;
 
         friend class NActors::TEventFlat<TEvBlobStorage::TEvVGetFlat, TEvVGetFlatTVersions>;
@@ -643,12 +645,16 @@ namespace NKikimr {
         void AddExtremeQuery(const TLogoBlobID& logoBlobId, ui32 sh, ui32 sz, const ui64 *cookie = nullptr);
 
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
+        NVDiskFlat::TGetFlagsRaw GetFlags() const { return Field<TFlagsTag>(); }
         NKikimrBlobStorage::EGetHandleClass GetHandleClass() const {
             return static_cast<NKikimrBlobStorage::EGetHandleClass>(static_cast<ui32>(Field<THandleClassTag>()));
         }
         NKikimrBlobStorage::EVDiskQueueId GetExtQueueId() const {
             return static_cast<NKikimrBlobStorage::EVDiskQueueId>(static_cast<NVDiskFlat::TMsgQoSRaw>(Field<TMsgQoSTag>()).ExtQueueId);
         }
+        ui64 GetExtremeQueriesCount() const;
+        NVDiskFlat::TExtremeQueryRaw GetExtremeQuery(ui64 idx) const;
+        NVDiskFlat::TRangeQueryRaw GetRangeQuery() const;
         bool Validate(TString& errorReason) const;
         TString ToString() const override;
     };
@@ -706,6 +712,8 @@ namespace NKikimr {
         using TPartsTag = TEvVGetResultFlatTPartsTag;
 
         mutable NLWTrace::TOrbit Orbit;
+        std::shared_ptr<TVMsgContext> MsgCtx;
+        TActorIDPtr SkeletonFrontIDPtr;
 
         friend class NActors::TEventFlat<TEvBlobStorage::TEvVGetResultFlat, TEvVGetResultFlatTVersions>;
 
@@ -723,6 +731,13 @@ namespace NKikimr {
 
         NKikimrProto::EReplyStatus GetStatus() const {
             return static_cast<NKikimrProto::EReplyStatus>(static_cast<ui32>(Field<TStatusTag>()));
+        }
+        TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
+        ui64 GetItemsCount() const { return ArraySize<TItemsTag>(); }
+        NVDiskFlat::TGetResultItemRaw GetItem(ui64 idx) const {
+            auto items = Array<TItemsTag>();
+            Y_ENSURE(idx < items.size(), "Get result item index is out of range");
+            return items.Get(idx);
         }
         bool HasBlob(const NVDiskFlat::TGetResultItemRaw& item) const;
         ui32 GetBlobSize(const NVDiskFlat::TGetResultItemRaw& item) const;

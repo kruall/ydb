@@ -144,6 +144,7 @@ NActors::NLog::EPriority PriorityForStatusInbound(NKikimrProto::EReplyStatus sta
     XX(TEvBlobStorage::TEvVMultiPut) \
     XX(TEvBlobStorage::TEvVPutFlat) \
     XX(TEvBlobStorage::TEvVGet) \
+    XX(TEvBlobStorage::TEvVGetFlat) \
     XX(TEvBlobStorage::TEvVBlock) \
     XX(TEvBlobStorage::TEvVGetBlock) \
     XX(TEvBlobStorage::TEvVCollectGarbage) \
@@ -427,6 +428,7 @@ struct TBlobStorageGroupGetParameters {
     TNodeLayoutInfoPtr NodeLayout;
     TAccelerationParams AccelerationParams;
     TDuration LongRequestThreshold;
+    bool EnableVDiskFlatEvents = false;
 };
 IActor* CreateBlobStorageGroupGetRequest(TBlobStorageGroupGetParameters params);
 
