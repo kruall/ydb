@@ -397,6 +397,11 @@ namespace NKikimr {
         void SetCookieIfAbsent(ui64 cookie);
 
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
+        TLogoBlobID GetBlobID() const { return NVDiskFlat::FromRaw(GetFrontend<TSinglePutV1>().template Field<TBlobIdTag>()); }
+        NVDiskFlat::TPutFlagsRaw GetFlags() const { return Field<TFlagsTag>(); }
+        ui64 GetCookie() const { return Field<TCookieTag>(); }
+        ui64 GetChecksum() const { return Field<TChecksumTag>(); }
+        NVDiskFlat::TPutItemRaw GetItem(size_t index) const;
         NKikimrBlobStorage::EPutHandleClass GetHandleClass() const {
             return static_cast<NKikimrBlobStorage::EPutHandleClass>(static_cast<ui32>(Field<THandleClassTag>()));
         }
@@ -409,6 +414,9 @@ namespace NKikimr {
         TRope GetBuffer() const;
         TRope GetItemBuffer(ui64 itemIdx) const;
         ui64 GetSumBlobSize() const;
+        void FillExtraBlockChecks(NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck>& out) const;
+        void FillItemExtraBlockChecks(ui64 itemIdx, NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck>& out) const;
+        NWilson::TTraceId GetItemTraceId(ui64 itemIdx) const;
         bool Validate(TString& errorReason) const;
         TString ToString() const override;
     };
@@ -509,6 +517,8 @@ namespace NKikimr {
         NVDiskFlat::TPutResultItemRaw GetItem(size_t index) const;
         TString GetErrorReason() const { return Bytes<TErrorReasonTag>().Materialize(); }
         TString GetItemErrorReason(const NVDiskFlat::TPutResultItemRaw& item) const;
+        void UpdateStatus(NKikimrProto::EReplyStatus status) { Field<TStatusTag>() = static_cast<ui32>(status); }
+        void SetWrittenBeyondBarrier(bool value);
         TString ToString() const override;
     };
 

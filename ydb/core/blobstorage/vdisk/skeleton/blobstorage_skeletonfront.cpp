@@ -630,8 +630,9 @@ namespace NKikimr {
                     UPDATE_WINDOW_STATUS(TEvBlobStorage::TEvVGetBarrierResult)
 #undef UPDATE_WINDOW_STATUS
                 }
-                Y_VERIFY_S(msgQoS, VDiskLogPrefix);
-                feedback.first.Serialize(*msgQoS->MutableWindow());
+                if (msgQoS) {
+                    feedback.first.Serialize(*msgQoS->MutableWindow());
+                }
                 NotifyOtherClients(ctx, feedback);
             }
 
@@ -725,6 +726,7 @@ namespace NKikimr {
         TInstant LastSanitizeTime = TInstant::Zero();
         TInstant LastSanitizeWithErrorTime = TInstant::Zero();
         ui64 NextUniqueMessageId = 1;
+        THashMap<TActorId, ui64> FlatMessageIds;
 
         TMonotonic StartTimestamp = TMonotonic::Zero();
 
@@ -1232,6 +1234,17 @@ namespace NKikimr {
             Reply(ev, ctx, NKikimrProto::ERROR, "access denied", now);
         }
 
+        void DatabaseAccessDeniedHandle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            LOG_ERROR_S(ctx, NKikimrServices::BS_SKELETON, VCtx->VDiskLogPrefix
+                    << "Access denied Type# " << Sprintf("0x%08" PRIx32, ev->GetTypeRewrite())
+                    << " Sender# " << ev->Sender.ToString()
+                    << " OriginScopeId# " << ScopeIdToString(ev->OriginScopeId)
+                    << " LocalScopeId# " << ScopeIdToString(AppData(ctx)->LocalScopeId.GetInterconnectScopeId())
+                    << " Marker# BSVSF09");
+            ++*AccessDeniedMessages;
+            Reply(ev, ctx, NKikimrProto::ERROR, "access denied", TAppData::TimeProvider->Now());
+        }
+
         template <class TEventPtr>
         void DatabaseErrorHandle(TEventPtr &ev, const TActorContext &ctx) {
             SetReceivedTime(ev);
@@ -1240,6 +1253,11 @@ namespace NKikimr {
             Reply(ev, ctx, NKikimrProto::VDISK_ERROR_STATE, "VDisk is in error state", now);
             // NOTE: VDisk is in StateDatabaseError state, it means recovery failed.
             //       VDisk returns VDISK_ERROR_STATE status to all requests (outside).
+        }
+
+        void DatabaseErrorHandle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            SetReceivedTime(ev);
+            Reply(ev, ctx, NKikimrProto::VDISK_ERROR_STATE, "VDisk is in error state", TAppData::TimeProvider->Now());
         }
 
         template <class TEventPtr>
@@ -1251,6 +1269,11 @@ namespace NKikimr {
             Reply(ev, ctx, NKikimrProto::NOTREADY, "VDisk is not ready", now);
             // NOTE: when database is not ready, we reply with NOTREADY and we do not
             //       pass this message to the Backpressure management subsystem
+        }
+
+        void DatabaseNotReadyHandle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            SetReceivedTime(ev);
+            Reply(ev, ctx, NKikimrProto::NOTREADY, "VDisk is not ready", TAppData::TimeProvider->Now());
         }
 
         void DatabaseErrorHandle(TEvBlobStorage::TEvMonStreamQuery::TPtr& ev, const TActorContext& ctx) {
@@ -1268,6 +1291,13 @@ namespace NKikimr {
                 << " Sender# " << ev->Sender.ToString());
            TInstant now = TAppData::TimeProvider->Now();
            Reply(ev, ctx, NKikimrProto::ERROR, "VDisk is in read-only mode", now);
+        }
+
+        void DatabaseReadOnlyHandle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            LOG_ERROR_S(ctx, NKikimrServices::BS_SKELETON, VCtx->VDiskLogPrefix
+                << "Unavailable in read-only"
+                << " Sender# " << ev->Sender.ToString());
+           Reply(ev, ctx, NKikimrProto::ERROR, "VDisk is in read-only mode", TAppData::TimeProvider->Now());
         }
 
         ////////////////////////////////////////////////////////////////////////////
@@ -1384,6 +1414,54 @@ namespace NKikimr {
             Sanitize(ctx);
         }
 
+        template <class TEvent>
+        void HandleFlatRequestWithQoS(const TActorContext &ctx, TAutoPtr<TEventHandle<TEvent>> &ev, const char *msgName,
+                ui64 cost, TIntQueueClass &intQueue) {
+            CheckEvent(ev, msgName);
+            const ui64 advancedCost = VCtx->CostTracker ? VCtx->CostTracker->GetCost(*ev->Get()) : 0;
+            const auto msgQoS = static_cast<NVDiskFlat::TMsgQoSRaw>(ev->Get()->template Field<typename TEvent::TMsgQoSTag>());
+
+            const NBackpressure::TMessageId msgId(0, FlatMessageIds[ev->Sender]++);
+            const TInstant deadline = msgQoS.HasDeadlineSeconds ? TInstant::Seconds(msgQoS.DeadlineSeconds) : TInstant::Max();
+            const auto extQueueId = static_cast<NKikimrBlobStorage::EVDiskQueueId>(msgQoS.ExtQueueId);
+            const auto intQueueId = intQueue.IntQueueId;
+            const ui64 internalMessageId = AllocateMessageId();
+            const ui32 recByteSize = ev->GetSize();
+
+            bool compatible = Compatible(extQueueId, intQueueId);
+            Y_VERIFY_S(compatible, VCtx->VDiskLogPrefix
+                    << msgName << ": extQueue is incompatible with intQueue; intQueue# "
+                    << NKikimrBlobStorage::EVDiskInternalQueueId_Name(intQueueId) << " extQueue# "
+                    << NKikimrBlobStorage::EVDiskQueueId_Name(extQueueId));
+
+            LOG_TRACE_S(TActivationContext::AsActorContext(), NKikimrServices::BS_REQUEST_COST,
+                        "SkeletonFront Request Type# " << TypeName(*ev) << " Cost# " << cost <<
+                        " Sender# " << ev->Sender.ToString());
+
+            TExtQueueClass &extQueue = GetExtQueue(extQueueId);
+            NBackpressure::TQueueClientId clientId(NBackpressure::EQueueClientType::DSProxy, ev->Sender.NodeId());
+            std::unique_ptr<IEventHandle> event = extQueue.Enqueue(ctx, std::unique_ptr<IEventHandle>(
+                ev->Forward(SkeletonId).Release()), msgId, cost, *this, clientId);
+            if (event) {
+                intQueue.Enqueue(ctx, recByteSize, std::move(event), msgId, cost, deadline, extQueueId, *this, clientId,
+                    nullptr, internalMessageId);
+
+                if (clientId.GetType() == NBackpressure::EQueueClientType::DSProxy) {
+                    CostGroup.SkeletonFrontUserCostNs() += cost;
+                    if (VCtx->CostTracker) {
+                        VCtx->CostTracker->CountUserCost(advancedCost);
+                    }
+                } else {
+                    CostGroup.SkeletonFrontInternalCostNs() += cost;
+                    if (VCtx->CostTracker) {
+                        VCtx->CostTracker->CountInternalCost(advancedCost);
+                    }
+                }
+            }
+
+            Sanitize(ctx);
+        }
+
         bool Compatible(NKikimrBlobStorage::EVDiskQueueId extId, NKikimrBlobStorage::EVDiskInternalQueueId intId) {
             // Abbreviations
             // IU = IntUnknown
@@ -1474,6 +1552,37 @@ namespace NKikimr {
                         break;
                     case NKikimrBlobStorage::AsyncBlob:
                         HandleRequestWithQoS(ctx, ev, "TEvVPut", cost, *IntQueueHugePutsBackground);
+                        break;
+                    default:
+                        Y_ABORT("Unexpected case");
+                }
+            }
+        }
+
+        void Handle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            bool logPutInternalQueue = true;
+            const ui64 cost = VCtx->CostModel->GetCost(*ev->Get(), &logPutInternalQueue);
+
+            if (ev->Get()->IsSinglePut()) {
+                const TLogoBlobID blob = ev->Get()->GetBlobID();
+                LWTRACK(VDiskSkeletonFrontVPutRecieved, ev->Get()->Orbit, VCtx->NodeId, VCtx->GroupId.GetRawId(),
+                       VCtx->Top->GetFailDomainOrderNumber(VCtx->ShortSelfVDisk), blob.TabletID(), blob.BlobSize());
+            } else {
+                LWTRACK(VDiskSkeletonFrontVMultiPutRecieved, ev->Get()->Orbit, VCtx->NodeId, VCtx->GroupId.GetRawId(),
+                     VCtx->Top->GetFailDomainOrderNumber(VCtx->ShortSelfVDisk), ev->Get()->GetItemsCount(),
+                     ev->Get()->GetSumBlobSize());
+            }
+
+            if (logPutInternalQueue) {
+                HandleFlatRequestWithQoS(ctx, ev, "TEvVPutFlat", cost, *IntQueueLogPuts);
+            } else {
+                switch (ev->Get()->GetHandleClass()) {
+                    case NKikimrBlobStorage::TabletLog:
+                    case NKikimrBlobStorage::UserData:
+                        HandleFlatRequestWithQoS(ctx, ev, "TEvVPutFlat", cost, *IntQueueHugePutsForeground);
+                        break;
+                    case NKikimrBlobStorage::AsyncBlob:
+                        HandleFlatRequestWithQoS(ctx, ev, "TEvVPutFlat", cost, *IntQueueHugePutsBackground);
                         break;
                     default:
                         Y_ABORT("Unexpected case");
@@ -1621,6 +1730,13 @@ namespace NKikimr {
             }
         }
 
+        void SetReceivedTime(TEvBlobStorage::TEvVPutFlat::TPtr& ev) {
+            const double usPerCycle = 1000000.0 / NHPTimer::GetCyclesPerSecond();
+            auto timestamps = static_cast<NVDiskFlat::TTimestampsRaw>(ev->Get()->template Field<TEvBlobStorage::TEvVPutFlat::TTimestampsTag>());
+            timestamps.ReceivedByVDiskUs = GetCycleCountFast() * usPerCycle;
+            ev->Get()->template Field<TEvBlobStorage::TEvVPutFlat::TTimestampsTag>() = timestamps;
+        }
+
         ////////////////////////////////////////////////////////////////////////////
         // REPLY SECTOR
         ////////////////////////////////////////////////////////////////////////////
@@ -1628,6 +1744,11 @@ namespace NKikimr {
         void Reply(TPtr& ev, const TActorContext& ctx, NKikimrProto::EReplyStatus status, const TString& errorReason,
                 TInstant now, const TWindowStatus& wstatus) {
             wstatus.Serialize(*ev->Get()->Record.MutableMsgQoS()->MutableWindow());
+            Reply(ev, ctx, status, errorReason, now);
+        }
+
+        void Reply(TEvBlobStorage::TEvVPutFlat::TPtr& ev, const TActorContext& ctx, NKikimrProto::EReplyStatus status,
+                const TString& errorReason, TInstant now, const TWindowStatus& /*wstatus*/) {
             Reply(ev, ctx, status, errorReason, now);
         }
 
@@ -1912,6 +2033,7 @@ namespace NKikimr {
             HFunc(TEvBlobStorage::TEvVPatchXorDiff, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVPut, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVMultiPut, DatabaseNotReadyHandle)
+            HFunc(TEvBlobStorage::TEvVPutFlat, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVGet, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVBlock, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVGetBlock, DatabaseNotReadyHandle)
@@ -1957,6 +2079,7 @@ namespace NKikimr {
             HFunc(TEvBlobStorage::TEvVPatchXorDiff, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVPut, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVMultiPut, DatabaseNotReadyHandle)
+            HFunc(TEvBlobStorage::TEvVPutFlat, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVGet, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVBlock, DatabaseNotReadyHandle)
             HFunc(TEvBlobStorage::TEvVGetBlock, DatabaseNotReadyHandle)
@@ -2005,6 +2128,7 @@ namespace NKikimr {
             HFunc(TEvBlobStorage::TEvVPatchXorDiff, DatabaseErrorHandle)
             HFunc(TEvBlobStorage::TEvVPut, DatabaseErrorHandle)
             HFunc(TEvBlobStorage::TEvVMultiPut, DatabaseErrorHandle)
+            HFunc(TEvBlobStorage::TEvVPutFlat, DatabaseErrorHandle)
             HFunc(TEvBlobStorage::TEvVGet, DatabaseErrorHandle)
             HFunc(TEvBlobStorage::TEvVBlock, DatabaseErrorHandle)
             HFunc(TEvBlobStorage::TEvVGetBlock, DatabaseErrorHandle)
@@ -2061,6 +2185,7 @@ namespace NKikimr {
 
         template <typename TEv>
         static constexpr bool IsValidatable = std::is_same_v<TEv, TEvBlobStorage::TEvVMultiPut>
+                || std::is_same_v<TEv, TEvBlobStorage::TEvVPutFlat>
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVGet>
                 || std::is_same_v<TEv, TEvBlobStorage::TEvVPut>;
 
@@ -2100,11 +2225,19 @@ namespace NKikimr {
         template<typename TEv>
         static constexpr bool IsWithoutVDiskId = std::is_same_v<TEv, TEvGetLogoBlobIndexStatRequest>;
 
+        template<typename TEv>
+        static TVDiskID GetEventVDiskId(const TEv& ev) {
+            if constexpr (std::is_same_v<TEv, TEvBlobStorage::TEvVPutFlat>) {
+                return ev.GetVDiskID();
+            } else {
+                return VDiskIDFromVDiskID(ev.Record.GetVDiskID());
+            }
+        }
+
         template <typename TEventType>
         void Check(TAutoPtr<TEventHandle<TEventType>>& ev, const TActorContext& ctx) {
-            const auto& record = ev->Get()->Record;
             if constexpr (!IsWithoutVDiskId<TEventType>) {
-                const auto& vdiskId = VDiskIDFromVDiskID(record.GetVDiskID());
+                const auto& vdiskId = GetEventVDiskId(*ev->Get());
                 if (!vdiskId.SameExceptGeneration(SelfVDiskId)) {
                     LOG_CRIT_S(ctx, NKikimrServices::BS_SKELETON, VCtx->VDiskLogPrefix
                         << "VDiskId mismatch expected# " << SelfVDiskId << " provided# " << vdiskId
@@ -2173,6 +2306,7 @@ namespace NKikimr {
             HFunc(TEvBlobStorage::TEvVPatchXorDiff, Check)
             HFunc(TEvBlobStorage::TEvVPut, ValidateEvent)
             HFunc(TEvBlobStorage::TEvVMultiPut, ValidateEvent)
+            HFunc(TEvBlobStorage::TEvVPutFlat, ValidateEvent)
             HFunc(TEvBlobStorage::TEvVGet, ValidateEvent)
             HFunc(TEvBlobStorage::TEvVBlock, Check)
             HFunc(TEvBlobStorage::TEvVGetBlock, Check)
@@ -2233,6 +2367,7 @@ namespace NKikimr {
                 HFuncStatus(TEvBlobStorage::TEvVPatchXorDiff, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVPut, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVMultiPut, status, errorReason, now, wstatus);
+                HFuncStatus(TEvBlobStorage::TEvVPutFlat, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVGet, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVBlock, status, errorReason, now, wstatus);
                 HFuncStatus(TEvBlobStorage::TEvVGetBlock, status, errorReason, now, wstatus);

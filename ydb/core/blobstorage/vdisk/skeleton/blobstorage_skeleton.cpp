@@ -172,6 +172,21 @@ namespace NKikimr {
             return false;
         }
 
+        bool CheckIfWriteAllowed(TEvBlobStorage::TEvVPutFlat::TPtr& ev, const TActorContext& ctx) {
+            if (!SelfVDiskId.SameDisk(ev->Get()->GetVDiskID())) {
+                ReplyError(NKikimrProto::RACE, "group generation mismatch", ev, ctx, TAppData::TimeProvider->Now());
+            } else if (Config->BaseInfo.DonorMode) {
+                ReplyError(NKikimrProto::ERROR, "disk is in donor mode", ev, ctx, TAppData::TimeProvider->Now());
+            } else if (Config->BaseInfo.ReadOnly) {
+                ReplyError(NKikimrProto::ERROR, "disk is in readonly mode", ev, ctx, TAppData::TimeProvider->Now());
+            } else if (BlockWrites(GInfo->DecommitStatus)) {
+                ReplyError(NKikimrProto::ERROR, "group is being decommitted", ev, ctx, TAppData::TimeProvider->Now());
+            } else {
+                return true;
+            }
+            return false;
+        }
+
         void ProcessPostponedEvents(const TActorContext &ctx, bool actualizeLevels) {
             if (!OverloadHandler) {
                 return;
@@ -421,6 +436,14 @@ namespace NKikimr {
             SendReply(ctx, std::move(res), ev, BS_VDISK_PUT);
         }
 
+        void ReplyError(NKikimrProto::EReplyStatus status, const TString& errorReason, TEvBlobStorage::TEvVPutFlat::TPtr &ev,
+                        const TActorContext &ctx, TInstant now) {
+            using namespace NErrBuilder;
+            std::unique_ptr<IEventBase> res(ErroneousResult(VCtx, status, errorReason, ev, now, SkeletonFrontIDPtr, SelfVDiskId,
+                    Db->GetVDiskIncarnationGuid(), GInfo));
+            SendReply(ctx, std::move(res), ev, BS_VDISK_PUT);
+        }
+
         void Handle(TEvBlobStorage::TEvVMultiPut::TPtr &ev, const TActorContext &ctx) {
             if (!CheckIfWriteAllowed(ev, ctx)) {
                 return;
@@ -467,7 +490,40 @@ namespace NKikimr {
 
         template<typename TEvResult> struct TLoggedRecType {};
         template<> struct TLoggedRecType<TEvBlobStorage::TEvVPutResult> { using T = TLoggedRecVPut; };
+        template<> struct TLoggedRecType<TEvBlobStorage::TEvVPutResultFlat> { using T = TLoggedRecVPutFlat; };
         template<> struct TLoggedRecType<TEvVMultiPutItemResult> { using T = TLoggedRecVMultiPutItem; };
+
+        void UpdateVPutStatus(IEventBase *ev, NKikimrProto::EReplyStatus status) {
+            switch (ev->Type()) {
+                case TEvBlobStorage::EvVPutResult:
+                    static_cast<TEvBlobStorage::TEvVPutResult*>(ev)->UpdateStatus(status);
+                    break;
+                case TEvBlobStorage::EvVPutResultFlat:
+                    static_cast<TEvBlobStorage::TEvVPutResultFlat*>(ev)->UpdateStatus(status);
+                    break;
+                default:
+                    Y_ABORT("unexpected put result event type# %" PRIu32, ev->Type());
+            }
+        }
+
+        void SetVPutWrittenBeyondBarrier(IEventBase *ev, bool value) {
+            switch (ev->Type()) {
+                case TEvBlobStorage::EvVPutResult:
+                    static_cast<TEvBlobStorage::TEvVPutResult*>(ev)->Record.SetWrittenBeyondBarrier(value);
+                    break;
+                case TEvBlobStorage::EvVPutResultFlat:
+                    static_cast<TEvBlobStorage::TEvVPutResultFlat*>(ev)->SetWrittenBeyondBarrier(value);
+                    break;
+                default:
+                    Y_ABORT("unexpected put result event type# %" PRIu32, ev->Type());
+            }
+        }
+
+        void MarkVPutHugeWriteTime(IEventBase *ev) {
+            if (ev->Type() == TEvBlobStorage::EvVPutResult) {
+                static_cast<TEvBlobStorage::TEvVPutResult*>(ev)->MarkHugeWriteTime();
+            }
+        }
 
         template <typename TEvResult>
         std::pair<std::unique_ptr<NPDisk::TEvLog>, NWilson::TTraceId> CreatePutLogEvent(const TActorContext &ctx, TString evPrefix,
@@ -518,7 +574,7 @@ namespace NKikimr {
 
         std::unique_ptr<TEvHullWriteHugeBlob> CreateHullWriteHugeBlob(NActors::TActorId sender,
                 ui64 cookie, bool ignoreBlock, NKikimrBlobStorage::EPutHandleClass handleClass, TVPutInfo &info,
-                std::unique_ptr<TEvBlobStorage::TEvVPutResult> res, bool rewriteBlob)
+                std::unique_ptr<IEventBase> res, bool rewriteBlob)
         {
             Y_VERIFY_DEBUG_S(info.HullStatus.Status == NKikimrProto::OK, VCtx->VDiskLogPrefix);
             info.Buffer = TDiskBlob::Create(info.BlobId.BlobSize(), info.BlobId.PartId(), Db->GType.TotalPartCount(),
@@ -766,6 +822,231 @@ namespace NKikimr {
             }
         }
 
+        void Handle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            if (!CheckIfWriteAllowed(ev, ctx)) {
+                return;
+            }
+            PrivateHandle(ev, ctx);
+        }
+
+        void PrivateHandle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            if (ev->Get()->IsMultiPut()) {
+                PrivateHandleFlatMulti(ev, ctx);
+            } else {
+                PrivateHandleFlatSingle(ev, ctx);
+            }
+        }
+
+        void PrivateHandleFlatSingle(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            IFaceMonGroup->PutMsgs()++;
+            IFaceMonGroup->PutTotalBytes() += ev->GetSize();
+            TInstant now = TAppData::TimeProvider->Now();
+            const TLogoBlobID id = ev->Get()->GetBlobID();
+            const auto flags = ev->Get()->GetFlags();
+            LWTRACK(VDiskSkeletonVPutRecieved, ev->Get()->Orbit, VCtx->NodeId, VCtx->GroupId.GetRawId(),
+                   VCtx->Top->GetFailDomainOrderNumber(VCtx->ShortSelfVDisk), id.TabletID(), id.BlobSize());
+
+            NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> extraBlockChecks;
+            ev->Get()->FillExtraBlockChecks(extraBlockChecks);
+            TVPutInfo info(id, ev->Get()->GetBuffer(), flags.HasChecksum() ? std::make_optional(ev->Get()->GetChecksum()) :
+                std::nullopt, &extraBlockChecks, std::move(ev->TraceId), flags.GetIssueKeepFlag(), flags.GetIgnoreBlock());
+            const ui64 bufSize = info.Buffer.GetSize();
+
+            try {
+                info.IsHugeBlob = HugeBlobCtx->IsHugeBlob(VCtx->Top->GType, id.FullID(), MinHugeBlobInBytes);
+            } catch (yexception ex) {
+                LOG_ERROR_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << ex.what()  << " Marker# BSVS45");
+                ReplyError(NKikimrProto::ERROR, ex.what(), ev, ctx, now);
+                return;
+            }
+
+            const bool ignoreBlock = flags.GetIgnoreBlock();
+            if (!OutOfSpaceLogic->AllowVPutLikeWrite(ctx, ignoreBlock, flags.GetIsZeroEntry(), ev->Get()->GetBufferBytes())) {
+                ReplyError(NKikimrProto::OUT_OF_SPACE, "out of space", ev, ctx, now);
+                return;
+            }
+
+            info.HullStatus = ValidateVPut(ctx, "TEvVPutFlat", id, bufSize, ignoreBlock, info.IssueKeepFlag,
+                info.ExtraBlockChecks, &info.WrittenBeyondBarrier);
+            if (info.HullStatus.Status != NKikimrProto::OK) {
+                ReplyError(info.HullStatus.Status, info.HullStatus.ErrorReason, ev, ctx, now);
+                return;
+            }
+
+            auto ingressOpt = TIngress::CreateIngressWithLocal(VCtx->Top.get(), VCtx->ShortSelfVDisk, id,
+                info.IssueKeepFlag);
+            if (!ingressOpt) {
+                LOG_ERROR_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << "TEvVPutFlat: ingress mismatch; id# " << id
+                        << " Marker# BSVS46");
+                ReplyError(NKikimrProto::ERROR, "ingress mismatch", ev, ctx, now);
+                return;
+            }
+            info.Ingress = *ingressOpt;
+
+            if (!info.IsHugeBlob) {
+#ifdef OPTIMIZE_SYNC
+                info.Lsn = Db->LsnMngr->AllocLsnForHull();
+#else
+                info.Lsn = Db->LsnMngr->AllocLsnForHullAndSyncLog();
+#endif
+            }
+
+            const ui64 vcookie = ev->Get()->GetCookie();
+            const ui64 *cookie = flags.HasCookie() ? &vcookie : nullptr;
+            std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat> result(TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(
+                NKikimrProto::OK, id, SelfVDiskId, cookie, VCtx->GetOutOfSpaceState().GetGlobalStatusFlags(),
+                Db->GetVDiskIncarnationGuid(), TString()));
+            if (info.WrittenBeyondBarrier) {
+                result->SetWrittenBeyondBarrier(true);
+            }
+
+            OverloadHandler->ActualizeWeights(ctx, Mask(EHullDbType::LogoBlobs));
+
+            NKikimrBlobStorage::EPutHandleClass handleClass = ev->Get()->GetHandleClass();
+            if (!info.IsHugeBlob) {
+                auto [logMsg, traceId] = CreatePutLogEvent(ctx, "TEvVPutFlat", ev->Sender, ev->Cookie,
+                    std::move(ev->Get()->Orbit), handleClass, info, std::move(result));
+                ctx.Send(Db->LoggerID, logMsg.release(), 0, 0, std::move(traceId));
+            } else if (info.Buffer) {
+                auto traceId = std::move(info.TraceId);
+                auto hugeWrite = CreateHullWriteHugeBlob(ev->Sender, ev->Cookie, ignoreBlock, handleClass, info,
+                    std::move(result), false);
+                hugeWrite->Orbit = std::move(ev->Get()->Orbit);
+                ctx.Send(Db->HugeKeeperID, hugeWrite.release(), 0, 0, std::move(traceId));
+            } else {
+                ctx.Send(SelfId(), new TEvHullLogHugeBlob(0, info.BlobId, info.Ingress, TDiskPart(), ignoreBlock,
+                    info.IssueKeepFlag, ev->Sender, ev->Cookie, handleClass, std::move(result), &info.ExtraBlockChecks),
+                    0, 0, std::move(info.TraceId));
+            }
+        }
+
+        void PrivateHandleFlatMulti(TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TActorContext &ctx) {
+            IFaceMonGroup->MultiPutMsgs()++;
+            IFaceMonGroup->PutTotalBytes() += ev->GetSize();
+            TInstant now = TAppData::TimeProvider->Now();
+            if (!ev->Get()->GetItemsCount()) {
+                ReplyError(NKikimrProto::ERROR, "empty multiput", ev, ctx, now);
+                return;
+            }
+
+            TLogoBlobID firstBlobId = NVDiskFlat::FromRaw(ev->Get()->GetItem(0).BlobId);
+            LWTRACK(VDiskSkeletonVMultiPutRecieved, ev->Get()->Orbit, VCtx->NodeId, VCtx->GroupId.GetRawId(),
+                    VCtx->Top->GetFailDomainOrderNumber(VCtx->ShortSelfVDisk),
+                    firstBlobId.TabletID(), ev->Get()->GetSumBlobSize());
+
+            bool hasPostponed = false;
+            TBatchedVec<TVPutInfo> putsInfo;
+            ui64 lsnCount = 0;
+            for (ui64 itemIdx = 0; itemIdx < ev->Get()->GetItemsCount(); ++itemIdx) {
+                const auto item = ev->Get()->GetItem(itemIdx);
+                const auto flags = item.Flags;
+                TLogoBlobID blobId = NVDiskFlat::FromRaw(item.BlobId);
+                NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> extraBlockChecks;
+                ev->Get()->FillItemExtraBlockChecks(itemIdx, extraBlockChecks);
+                putsInfo.emplace_back(blobId, ev->Get()->GetItemBuffer(itemIdx), flags.HasChecksum() ?
+                    std::make_optional(item.Checksum) : std::nullopt, &extraBlockChecks,
+                    ev->Get()->GetItemTraceId(itemIdx), flags.GetIssueKeepFlag(), flags.GetIgnoreBlock());
+                TVPutInfo &info = putsInfo.back();
+                const bool ignoreBlock = ev->Get()->GetFlags().GetIgnoreBlock() || info.IgnoreBlock;
+                const bool isZeroEntry = flags.GetIsZeroEntry();
+
+                if (!OutOfSpaceLogic->AllowVPutLikeWrite(ctx, ignoreBlock, isZeroEntry, info.Buffer.size())) {
+                    info.HullStatus = {NKikimrProto::OUT_OF_SPACE, "out of space", false};
+                    continue;
+                }
+
+                try {
+                    info.IsHugeBlob = HugeBlobCtx->IsHugeBlob(VCtx->Top->GType, blobId.FullID(), MinHugeBlobInBytes);
+                    if (info.IsHugeBlob) {
+                        LOG_CRIT_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << "TEvVPutFlat: multiput has huge blob# "
+                            << blobId << " Marker# BSVS47");
+                        info.HullStatus = THullCheckStatus(NKikimrProto::ERROR, "TEvVPutFlat multiput with huge blob");
+                    }
+                } catch (const std::exception& ex) {
+                    LOG_ERROR_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << ex.what() << " Marker# BSVS48");
+                    info.HullStatus = THullCheckStatus(NKikimrProto::ERROR, TStringBuilder() << "exception# " << ex.what());
+                }
+
+                if (info.HullStatus.Status == NKikimrProto::UNKNOWN) {
+                    info.HullStatus = ValidateVPut(ctx, "TEvVPutFlat", blobId, info.Buffer.GetSize(), ignoreBlock,
+                        info.IssueKeepFlag, info.ExtraBlockChecks, &info.WrittenBeyondBarrier);
+                }
+
+                if (info.HullStatus.Status == NKikimrProto::OK) {
+                    auto ingressOpt = TIngress::CreateIngressWithLocal(VCtx->Top.get(), VCtx->ShortSelfVDisk, blobId,
+                        info.IssueKeepFlag);
+                    if (!ingressOpt) {
+                        LOG_ERROR_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << "TEvVPutFlat: ingress mismatch;"
+                                << " id# " << blobId
+                                << " Marker# BSVS49");
+                        info.HullStatus = {NKikimrProto::ERROR, "", false};
+                    } else {
+                        info.Ingress = *ingressOpt;
+                    }
+                }
+                hasPostponed |= info.HullStatus.Postponed;
+                lsnCount += info.HullStatus.Status == NKikimrProto::OK;
+            }
+
+            TBatchedVec<NKikimrProto::EReplyStatus> statuses;
+            for (auto &info : putsInfo) {
+                statuses.push_back(info.HullStatus.Postponed ? NKikimrProto::OK : info.HullStatus.Status);
+            }
+            if (!lsnCount && !hasPostponed) {
+                ReplyError(NKikimrProto::OK, TString(), ev, ctx, now);
+                return;
+            }
+
+            TOutOfSpaceStatus oosStatus = VCtx->GetOutOfSpaceState().GetGlobalStatusFlags();
+            NLWTrace::TOrbit orbit = std::move(ev->Get()->Orbit);
+            std::unique_ptr<NPDisk::TEvMultiLog> evLogs = std::make_unique<NPDisk::TEvMultiLog>();
+            ui64 cookie = ev->Cookie;
+
+            IActor* vMultiPutActor = CreateSkeletonVPutFlatMultiActor(SelfId(), statuses, oosStatus, ev,
+                    IFaceMonGroup->MultiPutResMsgsPtr(), Db->GetVDiskIncarnationGuid(), VCtx);
+            NActors::TActorId vMultiPutActorId = ctx.Register(vMultiPutActor);
+            ActiveActors.Insert(vMultiPutActorId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+
+            TLsnSeg lsnBatch;
+            if (lsnCount) {
+#ifdef OPTIMIZE_SYNC
+                lsnBatch = Db->LsnMngr->AllocDiscreteLsnBatchForHull(lsnCount);
+#else
+                lsnBatch = Db->LsnMngr->AllocDiscreteLsnBatchForHullAndSyncLog(lsnCount);
+#endif
+            }
+
+            for (ui64 itemIdx = 0; itemIdx < ev->Get()->GetItemsCount(); ++itemIdx) {
+                TVPutInfo &info = putsInfo[itemIdx];
+                NKikimrProto::EReplyStatus status = info.HullStatus.Status;
+
+                auto result = std::make_unique<TEvVMultiPutItemResult>(info.BlobId, itemIdx, status,
+                    info.HullStatus.ErrorReason, info.WrittenBeyondBarrier);
+
+                if (info.HullStatus.Postponed) {
+                    Hull->PostponeReplyUntilCommitted(result.release(), vMultiPutActorId, itemIdx, std::move(info.TraceId),
+                        info.HullStatus.Lsn);
+                    continue;
+                }
+
+                if (status != NKikimrProto::OK) {
+                    continue;
+                }
+
+                Y_VERIFY_S(lsnBatch.First <= lsnBatch.Last, VCtx->VDiskLogPrefix);
+                info.Lsn = TLsnSeg(lsnBatch.First, lsnBatch.First);
+                lsnBatch.First++;
+                auto [logMsg, traceId] = CreatePutLogEvent(ctx, "TEvVPutFlat", vMultiPutActorId, cookie,
+                    (itemIdx ? NLWTrace::TOrbit{} : std::move(orbit)), ev->Get()->GetHandleClass(), info, std::move(result));
+                evLogs->AddLog(THolder<NPDisk::TEvLog>(logMsg.release()), std::move(traceId));
+            }
+
+            OverloadHandler->ActualizeWeights(ctx, Mask(EHullDbType::LogoBlobs));
+            if (lsnCount) {
+                ctx.Send(Db->LoggerID, evLogs.release());
+            }
+        }
+
         void PrivateHandle(TEvBlobStorage::TEvVPut::TPtr &ev, const TActorContext &ctx) {
             IFaceMonGroup->PutMsgs()++;
             IFaceMonGroup->PutTotalBytes() += ev->GetSize();
@@ -870,12 +1151,12 @@ namespace NKikimr {
             TEvHullLogHugeBlob *msg = ev->Get();
 
             // update hull write duration
-            msg->Result->MarkHugeWriteTime();
+            MarkVPutHugeWriteTime(msg->Result.get());
             bool writtenBeyondBarrier = false;
             auto status = Hull->CheckLogoBlob(ctx, msg->LogoBlobID, msg->IgnoreBlock, msg->IssueKeepFlag,
                 msg->ExtraBlockChecks, msg->RewriteBlob ? nullptr : &writtenBeyondBarrier);
             if (status.Status != NKikimrProto::OK) {
-                msg->Result->UpdateStatus(status.Status); // modify status in result
+                UpdateVPutStatus(msg->Result.get(), status.Status); // modify status in result
                 LOG_DEBUG_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix
                         << "TEvVPut: realtime# false result# " << msg->Result->ToString()
                         << " Marker# BSVS13");
@@ -891,10 +1172,11 @@ namespace NKikimr {
 
                 return;
             } else if (writtenBeyondBarrier) {
-                msg->Result->Record.SetWrittenBeyondBarrier(true);
+                SetVPutWrittenBeyondBarrier(msg->Result.get(), true);
             }
-
-            msg->Result->WrittenLocation = msg->HugeBlob;
+            if (msg->Result->Type() == TEvBlobStorage::EvVPutResult) {
+                static_cast<TEvBlobStorage::TEvVPutResult*>(msg->Result.get())->WrittenLocation = msg->HugeBlob;
+            }
 
 #ifdef OPTIMIZE_SYNC
             TLsnSeg seg = Db->LsnMngr->AllocLsnForHull();
@@ -2986,6 +3268,7 @@ namespace NKikimr {
             hFunc(TEvVPatchDyingRequest, Handle)
             HFunc(TEvBlobStorage::TEvVPut, Handle)
             HFunc(TEvBlobStorage::TEvVMultiPut, Handle)
+            HFunc(TEvBlobStorage::TEvVPutFlat, Handle)
             HFunc(TEvHullLogHugeBlob, Handle)
             HFunc(TEvDelLogoBlobDataSyncLog, Handle)
             HFunc(TEvAddBulkSst, Handle)

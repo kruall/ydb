@@ -258,6 +258,21 @@ public:
         return cost;
     }
 
+    ui64 GetCost(const TEvBlobStorage::TEvVPutFlat& ev) const {
+        const NKikimrBlobStorage::EPutHandleClass handleClass = ev.GetHandleClass();
+        ui64 cost = 0;
+        for (ui64 idx = 0; idx < ev.GetItemsCount(); ++idx) {
+            const ui64 size = ev.IsSinglePut() ? ev.GetBufferBytes() : ev.GetBufferBytes(idx);
+            NPriPut::EHandleType handleType = NPriPut::HandleType(HugeBlobSize, handleClass, size);
+            if (handleType == NPriPut::Log) {
+                cost += WriteCost(size);
+            } else {
+                cost += HugeWriteCost(size);
+            }
+        }
+        return cost;
+    }
+
     // PATCHES
     ui64 GetCost(const TEvBlobStorage::TEvVPatchStart&/* ev*/) const { return 0; }
     ui64 GetCost(const TEvBlobStorage::TEvVPatchDiff&/* ev*/) const { return 0; }

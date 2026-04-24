@@ -161,6 +161,13 @@ namespace NKikimr {
         return items.Get(idx).PayloadSize;
     }
 
+    NVDiskFlat::TPutItemRaw TEvBlobStorage::TEvVPutFlat::GetItem(size_t index) const {
+        Y_ENSURE(IsMultiPut(), "GetItem is only available for TEvVPutFlat multi-put scheme");
+        auto items = GetFrontend<TMultiPutV1>().template Array<TItemsTag>();
+        Y_ENSURE(index < items.size(), "Put item index is out of range");
+        return items.Get(index);
+    }
+
     ui64 TEvBlobStorage::TEvVPutFlat::GetItemsCount() const {
         if (IsSinglePut()) {
             return 1;
@@ -181,6 +188,40 @@ namespace NKikimr {
         const auto item = items.Get(itemIdx);
         const TRope& payload = frontend.template Bytes<TPayloadTag>().Rope();
         return TRope(payload.Position(item.PayloadOffset), payload.Position(item.PayloadOffset + item.PayloadSize));
+    }
+
+    void TEvBlobStorage::TEvVPutFlat::FillExtraBlockChecks(
+            NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck>& out) const {
+        Y_ENSURE(IsSinglePut(), "FillExtraBlockChecks is only available for TEvVPutFlat single-put scheme");
+        auto checks = GetFrontend<TSinglePutV1>().template Array<TExtraBlockChecksTag>();
+        for (size_t i = 0; i < checks.size(); ++i) {
+            const auto check = checks.Get(i);
+            auto *item = out.Add();
+            item->SetTabletId(check.TabletId);
+            item->SetGeneration(check.Generation);
+        }
+    }
+
+    void TEvBlobStorage::TEvVPutFlat::FillItemExtraBlockChecks(ui64 itemIdx,
+            NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck>& out) const {
+        Y_ENSURE(IsMultiPut(), "FillItemExtraBlockChecks is only available for TEvVPutFlat multi-put scheme");
+        auto frontend = GetFrontend<TMultiPutV1>();
+        auto items = frontend.template Array<TItemsTag>();
+        auto checks = frontend.template Array<TExtraBlockChecksTag>();
+        Y_ENSURE(itemIdx < items.size(), "Put item index is out of range");
+        const auto item = items.Get(itemIdx);
+        Y_ENSURE(item.ExtraBlockChecksOffset + item.ExtraBlockChecksCount <= checks.size(), "Extra block checks are out of range");
+        for (size_t i = 0; i < item.ExtraBlockChecksCount; ++i) {
+            const auto check = checks.Get(item.ExtraBlockChecksOffset + i);
+            auto *outItem = out.Add();
+            outItem->SetTabletId(check.TabletId);
+            outItem->SetGeneration(check.Generation);
+        }
+    }
+
+    NWilson::TTraceId TEvBlobStorage::TEvVPutFlat::GetItemTraceId(ui64 itemIdx) const {
+        Y_UNUSED(itemIdx);
+        return {};
     }
 
     ui64 TEvBlobStorage::TEvVPutFlat::GetSumBlobSize() const {
@@ -334,6 +375,13 @@ namespace NKikimr {
         const TString errors = GetErrorReason();
         Y_ENSURE(item.ErrorReasonOffset + item.ErrorReasonSize <= errors.size(), "Put result item error reason is out of range");
         return errors.substr(item.ErrorReasonOffset, item.ErrorReasonSize);
+    }
+
+    void TEvBlobStorage::TEvVPutResultFlat::SetWrittenBeyondBarrier(bool value) {
+        Y_ENSURE(IsSinglePutResult(), "SetWrittenBeyondBarrier is only available for single-put result");
+        auto flags = static_cast<NVDiskFlat::TPutResultFlagsRaw>(Field<TFlagsTag>());
+        flags.SetWrittenBeyondBarrier(value);
+        Field<TFlagsTag>() = flags;
     }
 
     TString TEvBlobStorage::TEvVPutResultFlat::ToString() const {

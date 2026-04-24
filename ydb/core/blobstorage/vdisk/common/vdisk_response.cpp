@@ -1,5 +1,6 @@
 #include "vdisk_response.h"
 #include "vdisk_events.h"
+#include "vdisk_flat_events.h"
 #include <ydb/core/base/interconnect_channels.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_util_space_color.h>
 #include <util/system/datetime.h>
@@ -31,6 +32,11 @@ void SendVDiskResponse(const TActorContext &ctx, const TActorId &recipient, IEve
             }
 
                 HANDLE_EVENT(TEvBlobStorage::TEvVPutResult)
+                case TEvBlobStorage::TEvVPutResultFlat::EventType: {
+                    auto *event = static_cast<TEvBlobStorage::TEvVPutResultFlat *>(ev);
+                    ReportResponse(*event, handleClass, vCtx);
+                    break;
+                }
                 HANDLE_EVENT(TEvBlobStorage::TEvVMultiPutResult)
                 HANDLE_EVENT(TEvBlobStorage::TEvVGetResult)
                 HANDLE_EVENT(TEvBlobStorage::TEvVGetBlockResult)
@@ -49,6 +55,8 @@ void SendVDiskResponse(const TActorContext &ctx, const TActorId &recipient, IEve
         }
 
         HANDLE_EVENT(TEvVPutResult)
+        case TEvBlobStorage::EvVPutResultFlat:
+            break;
         HANDLE_EVENT(TEvVMultiPutResult)
         HANDLE_EVENT(TEvVGetResult)
         HANDLE_EVENT(TEvVPatchFoundParts)
@@ -84,7 +92,8 @@ struct IsInTypesList<T, TypesList<Types...>> {
 struct TReportingOSStatus {
     using EnableFor = TypesList<
         NKikimrBlobStorage::TEvVPutResult,
-        NKikimrBlobStorage::TEvVMultiPutResult>;
+        NKikimrBlobStorage::TEvVMultiPutResult,
+        TEvBlobStorage::TEvVPutResultFlat>;
 
     template <typename TRecord>
     static void Report(const TRecord& record, const TCommonHandleClass&, const TIntrusivePtr<TVDiskContext>& vCtx) {
@@ -100,12 +109,25 @@ struct TReportingOSStatus {
             UpdateMonOOSStatus(record.GetStatusFlags(), vCtx->OOSMonGroup);
         }
     }
+
+    template<>
+    void Report(const TEvBlobStorage::TEvVPutResultFlat& record, const TCommonHandleClass&, const TIntrusivePtr<TVDiskContext>& vCtx) {
+        TLogoBlobID blobId;
+        if (record.IsSinglePutResult()) {
+            blobId = record.GetBlobID();
+        } else if (record.GetItemsCount()) {
+            blobId = NVDiskFlat::FromRaw(record.GetItem(0).BlobId);
+        }
+        LogOOSStatus(record.GetStatusFlags(), blobId, vCtx->VDiskLogPrefix, vCtx->CurrentOOSStatusFlag);
+        UpdateMonOOSStatus(record.GetStatusFlags(), vCtx->OOSMonGroup);
+    }
 };
 
 struct TReportingResponseStatus {
     using EnableFor = TypesList<
         NKikimrBlobStorage::TEvVPutResult,
         NKikimrBlobStorage::TEvVMultiPutResult,
+        TEvBlobStorage::TEvVPutResultFlat,
         NKikimrBlobStorage::TEvVGetResult,
         NKikimrBlobStorage::TEvVGetBlockResult,
         NKikimrBlobStorage::TEvVCollectGarbageResult>;
@@ -119,6 +141,18 @@ struct TReportingResponseStatus {
     void Report(const NKikimrBlobStorage::TEvVMultiPutResult& record, const TCommonHandleClass& handleClass, const TIntrusivePtr<TVDiskContext>& vCtx) {
         for (const auto& item : record.GetItems()) {
             UpdateMonResponseStatus(item.GetStatus(), handleClass, vCtx->ResponseStatusMonGroup);
+        }
+    }
+
+    template<>
+    void Report(const TEvBlobStorage::TEvVPutResultFlat& record, const TCommonHandleClass& handleClass, const TIntrusivePtr<TVDiskContext>& vCtx) {
+        if (record.IsSinglePutResult()) {
+            UpdateMonResponseStatus(record.GetStatus(), handleClass, vCtx->ResponseStatusMonGroup);
+        } else {
+            for (size_t i = 0; i < record.GetItemsCount(); ++i) {
+                UpdateMonResponseStatus(static_cast<NKikimrProto::EReplyStatus>(record.GetItem(i).Status), handleClass,
+                    vCtx->ResponseStatusMonGroup);
+            }
         }
     }
 };

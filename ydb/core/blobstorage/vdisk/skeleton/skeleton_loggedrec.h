@@ -1,6 +1,7 @@
 #pragma once
 #include "defs.h"
 #include "skeleton_vmultiput_actor.h"
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_private_events.h>
 #include <ydb/core/blobstorage/vdisk/hulldb/bulksst_add/hulldb_bulksst_add.h>
 #include <ydb/core/blobstorage/vdisk/syncer/blobstorage_syncer_localwriter.h>
@@ -67,6 +68,29 @@ namespace NKikimr {
         TActorId Recipient;
         ui64 RecipientCookie;
         TLazyRetroSpan Span;
+        NKikimrBlobStorage::EPutHandleClass HandleClass;
+    };
+
+    class TLoggedRecVPutFlat : public ILoggedRec {
+    public:
+        TLoggedRecVPutFlat(TLsnSeg seg, bool confirmSyncLogAlso, const TLogoBlobID &id, const TIngress &ingress,
+            TRope &&buffer, std::optional<ui64> checksum, std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat> result,
+            const TActorId &recipient, ui64 recipientCookie, NWilson::TTraceId traceId,
+            NKikimrBlobStorage::EPutHandleClass handleClass, const TVDiskID& vdiskId,
+            const TIntrusivePtr<TVDiskConfig>& config, const TVDiskContextPtr& vctx);
+        void Replay(THull &hull, const TActorContext &ctx) override;
+
+        NWilson::TTraceId GetTraceId() const;
+
+    private:
+        TLogoBlobID Id;
+        TIngress Ingress;
+        TRope Buffer;
+        std::optional<ui64> Checksum;
+        std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat> Result;
+        TActorId Recipient;
+        ui64 RecipientCookie;
+        NWilson::TSpan Span;
         NKikimrBlobStorage::EPutHandleClass HandleClass;
     };
 
@@ -240,4 +264,3 @@ namespace NKikimr {
     };
 
 } // NKikimr
-

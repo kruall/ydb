@@ -71,6 +71,59 @@ namespace NKikimr {
         return Span.GetTraceId();
     }
 
+    TLoggedRecVPutFlat::TLoggedRecVPutFlat(
+            TLsnSeg seg,
+            bool confirmSyncLogAlso,
+            const TLogoBlobID &id,
+            const TIngress &ingress,
+            TRope &&buffer,
+            std::optional<ui64> checksum,
+            std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat> result,
+            const TActorId &recipient,
+            ui64 recipientCookie,
+            NWilson::TTraceId traceId,
+            NKikimrBlobStorage::EPutHandleClass handleClass,
+            const TVDiskID& vdiskId,
+            const TIntrusivePtr<TVDiskConfig>& config,
+            const TVDiskContextPtr& vctx)
+        : ILoggedRec(seg, confirmSyncLogAlso)
+        , Id(id)
+        , Ingress(ingress)
+        , Buffer(std::move(buffer))
+        , Checksum(checksum)
+        , Result(std::move(result))
+        , Recipient(recipient)
+        , RecipientCookie(recipientCookie)
+        , Span(TWilson::VDiskInternals, std::move(traceId), "VDisk.Log.PutFlat")
+        , HandleClass(handleClass)
+    {
+        if (Span) {
+            Span.Attribute("blob_id", id.ToString());
+            Span.Attribute("group_id", vctx->GroupId.GetRawId());
+            Span.Attribute("vdisk_id", vdiskId.ToString());
+            Span.Attribute("storage_pool", config->BaseInfo.StoragePoolName);
+            Span.Attribute("handle_class", NKikimrBlobStorage::EPutHandleClass_Name(handleClass));
+        }
+    }
+
+    void TLoggedRecVPutFlat::Replay(THull &hull, const TActorContext &ctx) {
+        TLogoBlobID genId(Id, 0);
+        hull.AddLogoBlob(ctx, genId, Id.PartId(), Ingress, Buffer, Checksum, Seg.Point());
+
+        LOG_DEBUG_S(ctx, NKikimrServices::BS_VDISK_PUT, hull.GetHullCtx()->VCtx->VDiskLogPrefix << "TEvVPutFlat: reply;"
+                << " id# " << Id
+                << " msg# " << Result->ToString()
+                << " Marker# BSVSLR04");
+
+        Span.EndOk();
+        const auto& vCtx = hull.GetHullCtx()->VCtx;
+        SendVDiskResponse(ctx, Recipient, Result.release(), RecipientCookie, vCtx, HandleClass);
+    }
+
+    NWilson::TTraceId TLoggedRecVPutFlat::GetTraceId() const {
+        return Span.GetTraceId();
+    }
+
     ///////////////////////////////////////////////////////////////////////////////////////////////////////
     // TLoggedRecVPut -- incapsulates TEvVPut replay action (for small blobs)
     ///////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -409,4 +462,3 @@ namespace NKikimr {
     }
 
 } // NKikimr
-

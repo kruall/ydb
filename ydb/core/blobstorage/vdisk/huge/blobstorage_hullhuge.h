@@ -3,6 +3,7 @@
 #include "defs.h"
 #include "blobstorage_hullhugerecovery.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdiskctx.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_defrag.h>
 #include <ydb/library/actors/wilson/wilson_span.h>
@@ -22,7 +23,7 @@ namespace NKikimr {
         const bool IgnoreBlock;
         const bool IssueKeepFlag;
         const NKikimrBlobStorage::EPutHandleClass HandleClass;
-        std::unique_ptr<TEvBlobStorage::TEvVPutResult> Result;
+        std::unique_ptr<IEventBase> Result;
         NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> ExtraBlockChecks;
         const bool RewriteBlob;
 
@@ -36,7 +37,7 @@ namespace NKikimr {
                              bool ignoreBlock,
                              bool issueKeepFlag,
                              NKikimrBlobStorage::EPutHandleClass handleClass,
-                             std::unique_ptr<TEvBlobStorage::TEvVPutResult> result,
+                             std::unique_ptr<IEventBase> result,
                              NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> *extraBlockChecks,
                              bool rewriteBlob = false)
             : SenderId(senderId)
@@ -80,7 +81,7 @@ namespace NKikimr {
         const TActorId OrigClient;
         const ui64 OrigCookie;
         const NKikimrBlobStorage::EPutHandleClass HandleClass;
-        std::unique_ptr<TEvBlobStorage::TEvVPutResult> Result;
+        std::unique_ptr<IEventBase> Result;
         NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> ExtraBlockChecks;
         const bool RewriteBlob;
 
@@ -93,7 +94,7 @@ namespace NKikimr {
                            const TActorId &origClient,
                            ui64 origCookie,
                            NKikimrBlobStorage::EPutHandleClass handleClass,
-                           std::unique_ptr<TEvBlobStorage::TEvVPutResult> result,
+                           std::unique_ptr<IEventBase> result,
                            NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> *extraBlockChecks,
                            bool rewriteBlob = false)
             : WriteId(writeId)

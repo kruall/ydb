@@ -5,6 +5,7 @@
 #include <ydb/core/blobstorage/lwtrace_probes/blobstorage_probes.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_private_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_response.h>
@@ -317,6 +318,37 @@ namespace NKikimr {
             TBatchedVec<NKikimrProto::EReplyStatus> statuses(record.ItemsSize(), status);
             return ErroneousResult(vctx, status, errorReason, ev, now, skeletonFrontIDPtr, vdiskID, statuses,
                 vdiskIncarnationGuid, groupInfo);
+        }
+
+        static inline std::unique_ptr<IEventBase>
+        ErroneousResult(const TVDiskContextPtr &vctx, const NKikimrProto::EReplyStatus status, const TString& errorReason,
+                        TEvBlobStorage::TEvVPutFlat::TPtr &ev, const TInstant &/*now*/,
+                        const TActorIDPtr &/*skeletonFrontIDPtr*/, const TVDiskID &vdiskID, ui64 vdiskIncarnationGuid,
+                        const TIntrusivePtr<TBlobStorageGroupInfo>& /*groupInfo*/)
+        {
+            const auto oosStatus = vctx->GetOutOfSpaceState().GetGlobalStatusFlags();
+            const ui64 vcookie = ev->Get()->GetCookie();
+            const ui64 *cookie = ev->Get()->GetFlags().HasCookie() ? &vcookie : nullptr;
+            if (ev->Get()->IsSinglePut()) {
+                TLogoBlobID id = ev->Get()->GetBlobID();
+                LWTRACK(VDiskSkeletonFrontVPutRecieved, ev->Get()->Orbit, vctx->NodeId, vctx->GroupId.GetRawId(),
+                    vctx->Top->GetFailDomainOrderNumber(vctx->ShortSelfVDisk), id.TabletID(), id.BlobSize());
+                return std::unique_ptr<IEventBase>(TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(status, id,
+                    vdiskID, cookie, oosStatus, vdiskIncarnationGuid, errorReason));
+            }
+
+            LWTRACK(VDiskSkeletonFrontVMultiPutRecieved, ev->Get()->Orbit, vctx->NodeId, vctx->GroupId.GetRawId(),
+                vctx->Top->GetFailDomainOrderNumber(vctx->ShortSelfVDisk), ev->Get()->GetItemsCount(),
+                ev->Get()->GetBufferBytes());
+            auto result = std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat>(TEvBlobStorage::TEvVPutResultFlat::MakeMultiPutResult(
+                status, vdiskID, cookie, oosStatus, vdiskIncarnationGuid, errorReason));
+            for (ui64 itemIdx = 0; itemIdx < ev->Get()->GetItemsCount(); ++itemIdx) {
+                const auto item = ev->Get()->GetItem(itemIdx);
+                ui64 itemCookie = item.Cookie;
+                result->AddVPutResult(status, errorReason, NVDiskFlat::FromRaw(item.BlobId),
+                    item.Flags.HasCookie() ? &itemCookie : nullptr);
+            }
+            return result;
         }
 
         static inline std::unique_ptr<IEventBase>
