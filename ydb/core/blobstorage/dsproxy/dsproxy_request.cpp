@@ -257,6 +257,7 @@ namespace NKikimr {
                     .AccelerationParams = GetAccelerationParams(),
                     .LongRequestThreshold = TDuration::MilliSeconds(Controls.LongRequestThresholdMs.Update(now)),
                     .MaxTimeout = TDuration::Seconds(Controls.MaxPutTimeoutSeconds.Update(now)),
+                    .EnableVDiskFlatEvents = static_cast<bool>(Controls.EnableVDiskFlatEvents.Update(now)),
                 }),
                 ev->Get()->Deadline
             );
@@ -599,6 +600,7 @@ namespace NKikimr {
                                 .AccelerationParams = GetAccelerationParams(),
                                 .LongRequestThreshold = TDuration::MilliSeconds(Controls.LongRequestThresholdMs.Update(now)),
                                 .MaxTimeout = TDuration::Seconds(Controls.MaxPutTimeoutSeconds.Update(now)),
+                                .EnableVDiskFlatEvents = static_cast<bool>(Controls.EnableVDiskFlatEvents.Update(now)),
                             }),
                             ev->Get()->Deadline
                         );
@@ -625,6 +627,7 @@ namespace NKikimr {
                                 .LongRequestThreshold = TDuration::MilliSeconds(Controls.LongRequestThresholdMs.Update(now)),
                                 .MaxTimeout = TDuration::Seconds(Controls.MaxPutTimeoutSeconds.Update(now)),
                                 .ReduceInterpileTraffic = reduceInterpileTraffic,
+                                .EnableVDiskFlatEvents = static_cast<bool>(Controls.EnableVDiskFlatEvents.Update(now)),
                             }),
                             TInstant::Max()
                         );

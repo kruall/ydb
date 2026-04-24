@@ -381,6 +381,7 @@ struct TBlobStorageGroupPutParameters {
     TAccelerationParams AccelerationParams;
     TDuration LongRequestThreshold;
     TDuration MaxTimeout = TDuration::Seconds(60);
+    bool EnableVDiskFlatEvents = false;
 };
 IActor* CreateBlobStorageGroupPutRequest(TBlobStorageGroupPutParameters params);
 
@@ -402,6 +403,7 @@ struct TBlobStorageGroupMultiPutParameters {
     TDuration LongRequestThreshold;
     TDuration MaxTimeout = TDuration::Seconds(60);
     bool ReduceInterpileTraffic;
+    bool EnableVDiskFlatEvents = false;
 
     static ui32 CalculateRestartCounter(TBatchedVec<TEvBlobStorage::TEvPut::TPtr>& events) {
         ui32 maxRestarts = 0;
@@ -546,6 +548,7 @@ IActor* CreateBlobStorageGroupEjectedProxy(ui32 groupId, TIntrusivePtr<TDsProxyN
 struct TBlobStorageProxyControlWrappers {
     TMemorizableControlWrapper EnablePutBatching;
     TMemorizableControlWrapper EnableVPatch;
+    TMemorizableControlWrapper EnableVDiskFlatEvents = TControlWrapper(false, false, true);
 
     TMemorizableControlWrapper LongRequestThresholdMs = LongRequestThresholdDefaultControl;
     TMemorizableControlWrapper MaxPutTimeoutSeconds = MaxPutTimeoutDefaultControl;

@@ -299,7 +299,8 @@ void CodeGenBlobStorageNonConfigControls(TCodeGenContext& context) {
     };
     for (const auto& field: {
         "EnablePutBatching",
-        "EnableVPatch"
+        "EnableVPatch",
+        "EnableVDiskFlatEvents"
     }) {
         TImmediateControl control {
             .Name = field,

@@ -212,6 +212,7 @@ namespace NKikimr::NStorage {
 
         TControlWrapper EnablePutBatching;
         TControlWrapper EnableVPatch;
+        TControlWrapper EnableVDiskFlatEvents;
 
         TControlWrapper EnableLocalSyncLogDataCutting;
         TControlWrapper EnableSyncLogChunkCompressionHDD;

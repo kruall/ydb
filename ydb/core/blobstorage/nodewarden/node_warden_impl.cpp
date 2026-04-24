@@ -34,6 +34,7 @@ TNodeWarden::TNodeWarden(const TIntrusivePtr<TNodeWardenConfig> &cfg)
     : Cfg(cfg)
     , EnablePutBatching(Cfg->FeatureFlags.GetEnablePutBatchingForBlobStorage(), false, true)
     , EnableVPatch(Cfg->FeatureFlags.GetEnableVPatch(), false, true)
+    , EnableVDiskFlatEvents(false, false, true)
     , EnableLocalSyncLogDataCutting(0, 0, 1)
     , EnableSyncLogChunkCompressionHDD(1, 0, 1)
     , EnableSyncLogChunkCompressionSSD(0, 0, 1)
@@ -412,6 +413,7 @@ void TNodeWarden::Bootstrap() {
 
         TControlBoard::RegisterLocalControl(EnablePutBatching, icb->BlobStorage.EnablePutBatching);
         TControlBoard::RegisterLocalControl(EnableVPatch, icb->BlobStorage.EnableVPatch);
+        TControlBoard::RegisterLocalControl(EnableVDiskFlatEvents, icb->BlobStorage.EnableVDiskFlatEvents);
         TControlBoard::RegisterSharedControl(EnableLocalSyncLogDataCutting, icb->VDiskControls.EnableLocalSyncLogDataCutting);
         TControlBoard::RegisterSharedControl(EnableSyncLogChunkCompressionHDD, icb->VDiskControls.EnableSyncLogChunkCompressionHDD);
         TControlBoard::RegisterSharedControl(EnableSyncLogChunkCompressionSSD, icb->VDiskControls.EnableSyncLogChunkCompressionSSD);

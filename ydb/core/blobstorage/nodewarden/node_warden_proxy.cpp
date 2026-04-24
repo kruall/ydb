@@ -57,6 +57,7 @@ void TNodeWarden::StartLocalProxy(ui32 groupId) {
                             .Controls = TBlobStorageProxyControlWrappers{
                                 .EnablePutBatching = EnablePutBatching,
                                 .EnableVPatch = EnableVPatch,
+                                .EnableVDiskFlatEvents = EnableVDiskFlatEvents,
                                 .MaxPutTimeoutSeconds = MaxPutTimeoutSeconds,
                                 ADD_CONTROLS_FOR_DEVICE_TYPES(SlowDiskThreshold),
                                 ADD_CONTROLS_FOR_DEVICE_TYPES(PredictedDelayMultiplier),
@@ -83,6 +84,7 @@ void TNodeWarden::StartLocalProxy(ui32 groupId) {
                         .Controls = TBlobStorageProxyControlWrappers{
                             .EnablePutBatching = EnablePutBatching,
                             .EnableVPatch = EnableVPatch,
+                            .EnableVDiskFlatEvents = EnableVDiskFlatEvents,
                             .MaxPutTimeoutSeconds = MaxPutTimeoutSeconds,
                             ADD_CONTROLS_FOR_DEVICE_TYPES(SlowDiskThreshold),
                             ADD_CONTROLS_FOR_DEVICE_TYPES(PredictedDelayMultiplier),
@@ -99,6 +101,7 @@ void TNodeWarden::StartLocalProxy(ui32 groupId) {
             .Controls = TBlobStorageProxyControlWrappers{
                 .EnablePutBatching = EnablePutBatching,
                 .EnableVPatch = EnableVPatch,
+                .EnableVDiskFlatEvents = EnableVDiskFlatEvents,
                 .MaxPutTimeoutSeconds = MaxPutTimeoutSeconds,
                 ADD_CONTROLS_FOR_DEVICE_TYPES(SlowDiskThreshold),
                 ADD_CONTROLS_FOR_DEVICE_TYPES(PredictedDelayMultiplier),
