@@ -1440,6 +1440,9 @@ namespace NKikimr {
 
             TExtQueueClass &extQueue = GetExtQueue(extQueueId);
             NBackpressure::TQueueClientId clientId(NBackpressure::EQueueClientType::DSProxy, ev->Sender.NodeId());
+            ev->Get()->MsgCtx = std::make_shared<TVMsgContext>(recByteSize, clientId, msgId, cost, extQueueId, intQueueId,
+                ev->Sender, internalMessageId);
+            ev->Get()->SkeletonFrontIDPtr = std::make_shared<TActorId>(SelfId());
             std::unique_ptr<IEventHandle> event = extQueue.Enqueue(ctx, std::unique_ptr<IEventHandle>(
                 ev->Forward(SkeletonId).Release()), msgId, cost, *this, clientId);
             if (event) {

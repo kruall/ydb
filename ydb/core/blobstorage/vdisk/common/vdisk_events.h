@@ -364,6 +364,19 @@ namespace NKikimr {
             , InternalMessageId(msgQoS.GetInternalMessageId())
         {}
 
+        TVMsgContext(ui32 recByteSize, const NBackpressure::TQueueClientId& clientId,
+                const NBackpressure::TMessageId& msgId, ui64 cost, NKikimrBlobStorage::EVDiskQueueId extQueueId,
+                NKikimrBlobStorage::EVDiskInternalQueueId intQueueId, const TActorId& actorId, ui64 internalMessageId)
+            : ClientId(clientId)
+            , RecByteSize(recByteSize)
+            , MsgId(msgId)
+            , Cost(cost)
+            , ExtQueueId(extQueueId)
+            , IntQueueId(intQueueId)
+            , ActorId(actorId)
+            , InternalMessageId(internalMessageId)
+        {}
+
         void Output(IOutputStream &str) const {
             str << "{ClientId# " << ClientId
                 << " RecByteSize# " << RecByteSize

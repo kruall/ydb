@@ -73,6 +73,7 @@ namespace NKikimr {
 
             TBatchedVec<TItem> Items;
             ui64 ReceivedResults;
+            TActorIDPtr SkeletonFrontIDPtr;
             ::NMonitoring::TDynamicCounters::TCounterPtr MultiPutResMsgsPtr;
 
             TAutoPtr<TEventHandle<TEvent>> Event;
@@ -86,11 +87,13 @@ namespace NKikimr {
         public:
             TBufferVMultiPutActor(TActorId leaderId, const TBatchedVec<NKikimrProto::EReplyStatus> &statuses,
                     TOutOfSpaceStatus oosStatus, TAutoPtr<TEventHandle<TEvent>> &ev,
+                    TActorIDPtr skeletonFrontIDPtr,
                     ::NMonitoring::TDynamicCounters::TCounterPtr multiPutResMsgsPtr,
                     ui64 incarnationGuid, TIntrusivePtr<TVDiskContext>& vCtx)
                 : TBase()
                 , Items(TMultiPutTraits<TEvent>::ItemsSize(*ev->Get()))
                 , ReceivedResults(0)
+                , SkeletonFrontIDPtr(std::move(skeletonFrontIDPtr))
                 , MultiPutResMsgsPtr(multiPutResMsgsPtr)
                 , Event(ev)
                 , LeaderId(leaderId)
@@ -122,7 +125,7 @@ namespace NKikimr {
                     const NVDiskMon::TLtcHistoPtr &histoPtr = VCtx->Histograms.GetHistogram(handleClass);
                     const ui64 bufferSizeBytes = Event->Get()->GetBufferBytes();
                     auto vMultiPutResult = std::make_unique<TEvBlobStorage::TEvVMultiPutResult>(NKikimrProto::OK, vdisk, cookie,
-                        now, Event->Get()->GetCachedByteSize(), &vMultiPutRecord, nullptr, MultiPutResMsgsPtr,
+                        now, Event->Get()->GetCachedByteSize(), &vMultiPutRecord, SkeletonFrontIDPtr, MultiPutResMsgsPtr,
                         histoPtr, bufferSizeBytes, IncarnationGuid, TString());
 
                     for (ui64 idx = 0; idx < Items.size(); ++idx) {
@@ -136,6 +139,8 @@ namespace NKikimr {
                 } else {
                     auto vPutResult = std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat>(TEvBlobStorage::TEvVPutResultFlat::MakeMultiPutResult(
                         NKikimrProto::OK, vdisk, cookie, OOSStatus, IncarnationGuid, TString()));
+                    vPutResult->MsgCtx = Event->Get()->MsgCtx;
+                    vPutResult->SkeletonFrontIDPtr = Event->Get()->SkeletonFrontIDPtr;
                     for (ui64 idx = 0; idx < Items.size(); ++idx) {
                         TItem &result = Items[idx];
                         vPutResult->AddVPutResult(result.Status, result.ErrorReason, result.BlobId,
@@ -209,9 +214,8 @@ namespace NKikimr {
             TOutOfSpaceStatus oosStatus, TEvBlobStorage::TEvVMultiPut::TPtr &ev,
             TActorIDPtr skeletonFrontIDPtr, ::NMonitoring::TDynamicCounters::TCounterPtr counterPtr,
             ui64 incarnationGuid, TIntrusivePtr<TVDiskContext>& vCtx) {
-        Y_UNUSED(skeletonFrontIDPtr);
         return new NPrivate::TBufferVMultiPutActor<TEvBlobStorage::TEvVMultiPut>(leaderId, statuses, oosStatus, ev,
-                counterPtr, incarnationGuid, vCtx);
+                skeletonFrontIDPtr, counterPtr, incarnationGuid, vCtx);
     }
 
     IActor* CreateSkeletonVPutFlatMultiActor(TActorId leaderId, const TBatchedVec<NKikimrProto::EReplyStatus> &statuses,
@@ -219,7 +223,7 @@ namespace NKikimr {
             ::NMonitoring::TDynamicCounters::TCounterPtr counterPtr,
             ui64 incarnationGuid, TIntrusivePtr<TVDiskContext>& vCtx) {
         return new NPrivate::TBufferVMultiPutActor<TEvBlobStorage::TEvVPutFlat>(leaderId, statuses, oosStatus, ev,
-                counterPtr, incarnationGuid, vCtx);
+                nullptr, counterPtr, incarnationGuid, vCtx);
     }
 
 } // NKikimr

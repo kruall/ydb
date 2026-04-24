@@ -73,6 +73,13 @@ void SendVDiskResponse(const TActorContext &ctx, const TActorId &recipient, IEve
     auto event = std::make_unique<IEventHandle>(recipient, ctx.SelfID, ev, IEventHandle::MakeFlags(channel, 0), cookie);
     if (TEvVResultBase *base = dynamic_cast<TEvVResultBase *>(ev)) {
         base->FinalizeAndSend(ctx, std::move(event));
+    } else if (ev->Type() == TEvBlobStorage::EvVPutResultFlat) {
+        auto *result = static_cast<TEvBlobStorage::TEvVPutResultFlat *>(ev);
+        if (result->SkeletonFrontIDPtr && result->MsgCtx) {
+            ctx.Send(*result->SkeletonFrontIDPtr, new TEvVDiskRequestCompleted(*result->MsgCtx, std::move(event)));
+        } else {
+            TActivationContext::Send(event.release());
+        }
     } else {
         TActivationContext::Send(event.release());
     }

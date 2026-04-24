@@ -374,6 +374,8 @@ namespace NKikimr {
         using TTraceIdsTag = TEvVPutFlatTTraceIdsTag;
 
         mutable NLWTrace::TOrbit Orbit;
+        std::shared_ptr<TVMsgContext> MsgCtx;
+        TActorIDPtr SkeletonFrontIDPtr;
         bool RewriteBlob = false;
         bool IsInternal = false;
 
@@ -487,6 +489,8 @@ namespace NKikimr {
         using TItemsTag = TEvVPutResultFlatTItemsTag;
 
         mutable NLWTrace::TOrbit Orbit;
+        std::shared_ptr<TVMsgContext> MsgCtx;
+        TActorIDPtr SkeletonFrontIDPtr;
 
         friend class NActors::TEventFlat<TEvBlobStorage::TEvVPutResultFlat, TEvVPutResultFlatTVersions>;
 

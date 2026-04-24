@@ -333,8 +333,11 @@ namespace NKikimr {
                 TLogoBlobID id = ev->Get()->GetBlobID();
                 LWTRACK(VDiskSkeletonFrontVPutRecieved, ev->Get()->Orbit, vctx->NodeId, vctx->GroupId.GetRawId(),
                     vctx->Top->GetFailDomainOrderNumber(vctx->ShortSelfVDisk), id.TabletID(), id.BlobSize());
-                return std::unique_ptr<IEventBase>(TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(status, id,
+                auto result = std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat>(TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(status, id,
                     vdiskID, cookie, oosStatus, vdiskIncarnationGuid, errorReason));
+                result->MsgCtx = ev->Get()->MsgCtx;
+                result->SkeletonFrontIDPtr = ev->Get()->SkeletonFrontIDPtr;
+                return result;
             }
 
             LWTRACK(VDiskSkeletonFrontVMultiPutRecieved, ev->Get()->Orbit, vctx->NodeId, vctx->GroupId.GetRawId(),
@@ -348,6 +351,8 @@ namespace NKikimr {
                 result->AddVPutResult(status, errorReason, NVDiskFlat::FromRaw(item.BlobId),
                     item.Flags.HasCookie() ? &itemCookie : nullptr);
             }
+            result->MsgCtx = ev->Get()->MsgCtx;
+            result->SkeletonFrontIDPtr = ev->Get()->SkeletonFrontIDPtr;
             return result;
         }
 

@@ -896,6 +896,8 @@ namespace NKikimr {
             std::unique_ptr<TEvBlobStorage::TEvVPutResultFlat> result(TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(
                 NKikimrProto::OK, id, SelfVDiskId, cookie, VCtx->GetOutOfSpaceState().GetGlobalStatusFlags(),
                 Db->GetVDiskIncarnationGuid(), TString()));
+            result->MsgCtx = ev->Get()->MsgCtx;
+            result->SkeletonFrontIDPtr = ev->Get()->SkeletonFrontIDPtr;
             if (info.WrittenBeyondBarrier) {
                 result->SetWrittenBeyondBarrier(true);
             }
