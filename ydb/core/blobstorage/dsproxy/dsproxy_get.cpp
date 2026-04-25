@@ -80,7 +80,7 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         GetsAccelerated++;
 
         GetImpl.History.AddAcceleration(false);
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TVGetEventDeque vGets;
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
         GetImpl.AccelerateGet(LogCtx, GetUnresponsiveDisksMask(), vGets, vPuts);
         *Mon->NodeMon->AccelerateEvVPutCount += vPuts.size();
@@ -96,7 +96,7 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         PutsAccelerated++;
 
         GetImpl.History.AddAcceleration(true);
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TVGetEventDeque vGets;
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
         GetImpl.AcceleratePut(LogCtx, GetUnresponsiveDisksMask(), vGets, vPuts);
         *Mon->NodeMon->AccelerateEvVPutCount += vPuts.size();
@@ -105,7 +105,7 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         TrySchedulePutAcceleration();
     }
 
-    void SendVGetsAndVPuts(TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &vGets,
+    void SendVGetsAndVPuts(TVGetEventDeque &vGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &vPuts) {
         ReportBytes(GetImpl.GrabBytesToReport());
         RequestsSent += vGets.size() + vPuts.size();
@@ -119,11 +119,22 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
             }
         }
         for (size_t i = 0; i < vGets.size(); ++i) {
-            if (RootCauseTrack.IsOn) {
-                vGets[i]->Record.SetCookie(RootCauseTrack.RegisterCause());
+            TVDiskID vDiskId;
+            if (vGets[i]->Type() == TEvBlobStorage::TEvVGet::EventType) {
+                auto *vget = static_cast<TEvBlobStorage::TEvVGet*>(vGets[i].get());
+                if (RootCauseTrack.IsOn) {
+                    vget->Record.SetCookie(RootCauseTrack.RegisterCause());
+                }
+                Y_ABORT_UNLESS(vget->Record.HasVDiskID());
+                vDiskId = VDiskIDFromVDiskID(vget->Record.GetVDiskID());
+            } else {
+                Y_ABORT_UNLESS(vGets[i]->Type() == TEvBlobStorage::TEvVGetFlat::EventType);
+                auto *vget = static_cast<TEvBlobStorage::TEvVGetFlat*>(vGets[i].get());
+                if (RootCauseTrack.IsOn) {
+                    vget->SetCookie(RootCauseTrack.RegisterCause());
+                }
+                vDiskId = vget->GetVDiskID();
             }
-            Y_ABORT_UNLESS(vGets[i]->Record.HasVDiskID());
-            TVDiskID vDiskId = VDiskIDFromVDiskID(vGets[i]->Record.GetVDiskID());
             const TVDiskIdShort shortId(vDiskId);
             ui32 orderNumber = Info->GetOrderNumber(shortId);
             if (DiskCounters.size() <= orderNumber) {
@@ -162,7 +173,9 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
             );
         }
         for (auto& ev : vGets) {
-            const ui64 cookie = ev->Record.GetCookie();
+            const ui64 cookie = ev->Type() == TEvBlobStorage::TEvVGet::EventType
+                ? static_cast<TEvBlobStorage::TEvVGet*>(ev.get())->Record.GetCookie()
+                : static_cast<TEvBlobStorage::TEvVGetFlat*>(ev.get())->GetCookie();
             SendToQueue(std::move(ev), cookie);
         }
         for (auto& ev : vPuts) {
@@ -239,7 +252,7 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         }
         DiskCounters[orderNumber].Received++;
 
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TVGetEventDeque vGets;
         TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
         ResponsesReceived++;
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
@@ -299,7 +312,7 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         }
         DiskCounters[orderNumber].Received++;
 
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TVGetEventDeque vGets;
         TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
         ResponsesReceived++;
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
@@ -383,7 +396,7 @@ class TBlobStorageGroupGetRequest : public TBlobStorageGroupRequestActor {
         }
         DiskCounters[orderNumber].Received++;
 
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TVGetEventDeque vGets;
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
         TAutoPtr<TEvBlobStorage::TEvGetResult> getResult;
         ResponsesReceived++;
@@ -550,7 +563,7 @@ public:
             NKikimrBlobStorage::EGetHandleClass_Name(GetImpl.GetHandleClass())
         );
 
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> vGets;
+        TVGetEventDeque vGets;
         TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> vPuts;
         GetImpl.GenerateInitialRequests(LogCtx, vGets);
         SendVGetsAndVPuts(vGets, vPuts);

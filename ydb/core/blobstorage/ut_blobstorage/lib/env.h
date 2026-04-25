@@ -567,6 +567,7 @@ config:
                 ADD_ICB_CONTROL(DSProxyControls.MaxNumOfSlowDisksHDD, 2, 1, 2, Settings.MaxNumOfSlowDisks);
                 ADD_ICB_CONTROL(DSProxyControls.MaxNumOfSlowDisksSSD, 2, 1, 2, Settings.MaxNumOfSlowDisks);
                 ADD_ICB_CONTROL(DSProxyControls.MaxPutTimeoutSeconds, 60, 1, 1'000'000, Settings.MaxPutTimeoutDSProxy.Seconds());
+                ADD_ICB_CONTROL(BlobStorage.EnableVDiskFlatEvents, false, false, true, false);
 
                 ADD_ICB_CONTROL(BlobDepotControls.MaxLoadedTrashRecords, 1'000'000, 1, 100'000'000, 1'000'000);
 

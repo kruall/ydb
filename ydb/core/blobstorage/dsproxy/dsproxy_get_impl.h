@@ -5,11 +5,14 @@
 #include "dsproxy_mon.h"
 #include "request_history.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 #include <util/generic/set.h>
 
 namespace NKikimr {
 
 class TStrategyBase;
+
+using TVGetEventDeque = TDeque<std::unique_ptr<IEventBase>>;
 
 class TGetImpl {
     const TInstant Deadline;
@@ -167,10 +170,10 @@ public:
         return Info->GetOrderNumber(vdiskId);
     }
 
-    void GenerateInitialRequests(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets);
+    void GenerateInitialRequests(TLogContext &logCtx, TVGetEventDeque &outVGets);
 
     void OnVGetResult(TLogContext &logCtx, TEvBlobStorage::TEvVGetResult &ev,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TVGetEventDeque &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
         const NKikimrBlobStorage::TEvVGetResult &record = ev.Record;
@@ -263,7 +266,7 @@ public:
     }
 
     void OnVGetResult(TLogContext &logCtx, TEvBlobStorage::TEvVGetResultFlat &ev,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TVGetEventDeque &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
         const NKikimrProto::EReplyStatus status = ev.GetStatus();
@@ -349,7 +352,7 @@ public:
     }
 
     void OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVPutResult &ev,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TVGetEventDeque &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult);
 
@@ -357,7 +360,7 @@ public:
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult);
 
     void AccelerateGet(TLogContext &logCtx, ui32 slowDisksMask,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TVGetEventDeque &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts) {
         TAutoPtr<TEvBlobStorage::TEvGetResult> outGetResult;
         TBlackboard::EAccelerationMode prevMode = Blackboard.AccelerationMode;
@@ -377,7 +380,7 @@ public:
     }
 
     void AcceleratePut(TLogContext &logCtx, ui32 slowDisksMask,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+            TVGetEventDeque &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts) {
         AccelerateGet(logCtx, slowDisksMask, outVGets, outVPuts);
     }
@@ -398,7 +401,7 @@ protected:
     EStrategyOutcome RunStrategies(TLogContext &logCtx);
 
     // Returns true if there are additional requests to send
-    bool Step(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets,
+    bool Step(TLogContext &logCtx, TVGetEventDeque &outVGets,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
         switch (auto outcome = RunStrategies(logCtx)) {
@@ -419,8 +422,11 @@ protected:
         }
     }
 
-    void PrepareRequests(TLogContext &logCtx,
-            TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets);
+    bool CanUseFlatVGet() const {
+        return EnableVDiskFlatEvents && !ForceBlockTabletData && !ReaderTabletData && !AcquireBlockedGeneration;
+    }
+
+    void PrepareRequests(TLogContext &logCtx, TVGetEventDeque &outVGets);
     void PrepareVPuts(TLogContext &logCtx,
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts);
 

@@ -21,13 +21,16 @@ Y_UNIT_TEST_SUITE(GarbageCollection) {
         UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::ERROR);
     }
 
-    Y_UNIT_TEST(PutWithKeep) {
+    void PutWithKeep(bool enableFlatEvents) {
         TEnvironmentSetup env({
             .Erasure = TBlobStorageGroupType::Erasure4Plus2Block,
         });
         auto& runtime = env.Runtime;
 
         env.CreateBoxAndPool(1, 1);
+        if (enableFlatEvents) {
+            env.SetIcbControl(0, "BlobStorage.EnableVDiskFlatEvents", true);
+        }
         auto info = env.GetGroupInfo(env.GetGroups().front());
 
         const ui64 tabletId = 1;
@@ -127,5 +130,13 @@ Y_UNIT_TEST_SUITE(GarbageCollection) {
                 }
             }
         }
+    }
+
+    Y_UNIT_TEST(PutWithKeep) {
+        PutWithKeep(false);
+    }
+
+    Y_UNIT_TEST(PutWithKeepFlatEvents) {
+        PutWithKeep(true);
     }
 }

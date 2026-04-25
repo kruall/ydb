@@ -643,6 +643,8 @@ namespace NKikimr {
         bool IsExtremeQuery() const { return IsExtremeIndexQuery() || IsExtremeDataQuery(); }
 
         void AddExtremeQuery(const TLogoBlobID& logoBlobId, ui32 sh, ui32 sz, const ui64 *cookie = nullptr);
+        void SetCookie(ui64 cookie);
+        void SetSuppressBarrierCheck(bool value);
 
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
         NVDiskFlat::TGetFlagsRaw GetFlags() const { return Field<TFlagsTag>(); }

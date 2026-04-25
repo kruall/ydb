@@ -508,6 +508,19 @@ namespace NKikimr {
         }
     }
 
+    void TEvBlobStorage::TEvVGetFlat::SetCookie(ui64 cookie) {
+        Field<TCookieTag>() = cookie;
+        auto flags = GetFlags();
+        flags.SetHasCookie(true);
+        Field<TFlagsTag>() = flags;
+    }
+
+    void TEvBlobStorage::TEvVGetFlat::SetSuppressBarrierCheck(bool value) {
+        auto flags = GetFlags();
+        flags.SetSuppressBarrierCheck(value);
+        Field<TFlagsTag>() = flags;
+    }
+
     ui64 TEvBlobStorage::TEvVGetFlat::GetExtremeQueriesCount() const {
         Y_ENSURE(IsExtremeQuery(), "GetExtremeQueriesCount is only available for TEvVGetFlat extreme query schemes");
         return IsExtremeIndexQuery()

@@ -223,7 +223,7 @@ TString TGetImpl::DumpFullState() const {
     return str.Str();
 }
 
-void TGetImpl::GenerateInitialRequests(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets) {
+void TGetImpl::GenerateInitialRequests(TLogContext &logCtx, TVGetEventDeque &outVGets) {
     Y_ABORT_UNLESS(QuerySize != 0, "internal consistency error");
 
     // TODO(cthulhu): query politics
@@ -247,28 +247,65 @@ void TGetImpl::GenerateInitialRequests(TLogContext &logCtx, TDeque<std::unique_p
     Y_ABORT_UNLESS(workDone);
 }
 
-void TGetImpl::PrepareRequests(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets) {
+void TGetImpl::PrepareRequests(TLogContext &logCtx, TVGetEventDeque &outVGets) {
+    const bool useFlat = CanUseFlatVGet();
     TStackVec<std::unique_ptr<TEvBlobStorage::TEvVGet>, TypicalDisksInGroup> gets(Info->GetTotalVDisksNum());
+    TStackVec<std::unique_ptr<TEvBlobStorage::TEvVGetFlat>, TypicalDisksInGroup> flatGets(Info->GetTotalVDisksNum());
 
     for (auto& get : Blackboard.GroupDiskRequests.GetsPending) {
-        auto& vget = gets[get.OrderNumber];
-        if (!vget) {
-            const TVDiskID vdiskId = Info->GetVDiskId(get.OrderNumber);
-            vget = TEvBlobStorage::TEvVGet::CreateExtremeDataQuery(vdiskId, Deadline, Blackboard.GetHandleClass,
-                TEvBlobStorage::TEvVGet::EFlags::None, {}, {}, ForceBlockTabletData);
+        if (useFlat) {
+            auto& vget = flatGets[get.OrderNumber];
+            if (!vget) {
+                const TVDiskID vdiskId = Info->GetVDiskId(get.OrderNumber);
+                vget = TEvBlobStorage::TEvVGetFlat::CreateExtremeDataQuery(vdiskId, Deadline, Blackboard.GetHandleClass);
+            }
+            std::optional<ui64> cookie;
+            if (ReportDetailedPartMap) {
+                cookie = Blackboard.AddPartMap(get.Id, get.OrderNumber, RequestIndex);
+            }
+            vget->AddExtremeQuery(get.Id, get.Shift, get.Size, cookie ? &cookie.value() : nullptr);
+            vget->IsInternal = IsInternal;
+            vget->SetSuppressBarrierCheck(IsInternal);
+        } else {
+            auto& vget = gets[get.OrderNumber];
+            if (!vget) {
+                const TVDiskID vdiskId = Info->GetVDiskId(get.OrderNumber);
+                vget = TEvBlobStorage::TEvVGet::CreateExtremeDataQuery(vdiskId, Deadline, Blackboard.GetHandleClass,
+                    TEvBlobStorage::TEvVGet::EFlags::None, {}, {}, ForceBlockTabletData);
+            }
+            std::optional<ui64> cookie;
+            if (ReportDetailedPartMap) {
+                cookie = Blackboard.AddPartMap(get.Id, get.OrderNumber, RequestIndex);
+            }
+            vget->AddExtremeQuery(get.Id, get.Shift, get.Size, cookie ? &cookie.value() : nullptr);
+            vget->Record.SetSuppressBarrierCheck(IsInternal);
+            vget->Record.SetTabletId(TabletId);
+            vget->Record.SetAcquireBlockedGeneration(AcquireBlockedGeneration);
+            if (ReaderTabletData) {
+                auto msg = vget->Record.MutableReaderTabletData();
+                msg->SetId(ReaderTabletData->Id);
+                msg->SetGeneration(ReaderTabletData->Generation);
+            }
         }
-        std::optional<ui64> cookie;
-        if (ReportDetailedPartMap) {
-            cookie = Blackboard.AddPartMap(get.Id, get.OrderNumber, RequestIndex);
-        }
-        vget->AddExtremeQuery(get.Id, get.Shift, get.Size, cookie ? &cookie.value() : nullptr);
-        vget->Record.SetSuppressBarrierCheck(IsInternal);
-        vget->Record.SetTabletId(TabletId);
-        vget->Record.SetAcquireBlockedGeneration(AcquireBlockedGeneration);
-        if (ReaderTabletData) {
-            auto msg = vget->Record.MutableReaderTabletData();
-            msg->SetId(ReaderTabletData->Id);
-            msg->SetGeneration(ReaderTabletData->Generation);
+    }
+
+    for (auto& vget : flatGets) {
+        if (vget) {
+            ui32 orderNumber = Info->GetTopology().GetOrderNumber(vget->GetVDiskID());
+            DSP_LOG_DEBUG_SX(logCtx, "BPG75", "Send flat get to orderNumber# " << orderNumber << " vget# " << vget->ToString());
+            if (vget->GetExtremeQueriesCount() > 0) {
+                auto vgetItem = History.CreateVGet(vget->GetExtremeQueriesCount(), orderNumber);
+                for (ui32 i = 0; i < vget->GetExtremeQueriesCount(); ++i) {
+                    const auto query = vget->GetExtremeQuery(i);
+                    TLogoBlobID blobId = NVDiskFlat::FromRaw(query.BlobId);
+                    vgetItem.AddSubrequest(blobId, query.Shift, query.Size);
+                }
+                History.AddVGetToWaitingList(std::move(vgetItem));
+            } else {
+                History.AddVGetToWaitingList(0, orderNumber);
+            }
+            outVGets.push_back(std::move(vget));
+            ++RequestIndex;
         }
     }
 
@@ -310,7 +347,6 @@ void TGetImpl::PrepareVPuts(TLogContext &logCtx, TDeque<std::unique_ptr<TEvBlobS
     }
     Blackboard.GroupDiskRequests.PutsPending.clear();
 }
-
 EStrategyOutcome TGetImpl::RunBoldStrategy(TLogContext &logCtx) {
     TStackVec<IStrategy*, 1> strategies;
     TBoldStrategy s1(PhantomCheck);
@@ -356,7 +392,7 @@ EStrategyOutcome TGetImpl::RunStrategies(TLogContext &logCtx) {
 }
 
 void TGetImpl::OnVPutResult(TLogContext &logCtx, TEvBlobStorage::TEvVPutResult &ev,
-        TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets, TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
+        TVGetEventDeque &outVGets, TDeque<std::unique_ptr<TEvBlobStorage::TEvVPut>> &outVPuts,
         TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
     const NKikimrBlobStorage::TEvVPutResult &record = ev.Record;
     Y_ABORT_UNLESS(record.HasVDiskID());
