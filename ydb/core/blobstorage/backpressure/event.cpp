@@ -17,9 +17,25 @@ IEventBase *TEventHolder::MakeErrorReply(NKikimrProto::EReplyStatus status, cons
             *deserBytes += ByteSize;
         }
 
-        auto res = std::make_unique<TMatchingResultTypeT<T>>();
-        res->MakeError(status, std::move(errorReason), event->Record);
-        return res.release();
+        if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>) {
+            ui64 cookie = event->GetCookie();
+            const ui64 *cookiePtr = event->GetFlags().HasCookie() ? &cookie : nullptr;
+            if (event->IsSinglePut()) {
+                return TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(status, event->GetBlobID(),
+                    event->GetVDiskID(), cookiePtr, TOutOfSpaceStatus(0, 0), 0, errorReason);
+            } else {
+                return TEvBlobStorage::TEvVPutResultFlat::MakeMultiPutResult(status, event->GetVDiskID(),
+                    cookiePtr, TOutOfSpaceStatus(0, 0), 0, errorReason);
+            }
+        } else if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVGetFlat>) {
+            auto res = std::make_unique<TMatchingResultTypeT<T>>();
+            res->MakeError(status, errorReason, *event);
+            return res.release();
+        } else {
+            auto res = std::make_unique<TMatchingResultTypeT<T>>();
+            res->MakeError(status, std::move(errorReason), event->Record);
+            return res.release();
+        }
     };
 
     return Apply(callback);
@@ -54,15 +70,23 @@ void TEventHolder::SendToVDisk(const TActorContext& ctx, const TActorId& remoteV
     if (LocalEvent) {
         auto callback = [&](auto *ev) -> std::unique_ptr<IEventBase> {
             using T = std::remove_pointer_t<decltype(ev)>;
-            auto clone = std::make_unique<T>();
-            clone->Record.CopyFrom(ev->Record);
-            processMsgQoS(clone->Record);
-            for (ui32 i = 0, count = ev->GetPayloadCount(); i < count; ++i) {
-                clone->AddPayload(TRope(ev->GetPayload(i)));
+            if constexpr (std::is_same_v<T, TEvBlobStorage::TEvVPutFlat>
+                    || std::is_same_v<T, TEvBlobStorage::TEvVGetFlat>) {
+                Y_ABORT("flat events are serialized in the queue and don't use local cloning");
+                return nullptr;
+            } else {
+                auto clone = std::make_unique<T>();
+                clone->Record.CopyFrom(ev->Record);
+                processMsgQoS(clone->Record);
+                for (ui32 i = 0, count = ev->GetPayloadCount(); i < count; ++i) {
+                    clone->AddPayload(TRope(ev->GetPayload(i)));
+                }
+                return clone;
             }
-            return clone;
         };
         ctx.Send(remoteVDisk, Apply(callback).release(), flags, queueCookie, std::move(traceId));
+    } else if (Type == TEvBlobStorage::EvVPutFlat || Type == TEvBlobStorage::EvVGetFlat) {
+        ctx.Send(new IEventHandle(Type, flags, remoteVDisk, ctx.SelfID, Buffer, queueCookie, nullptr, std::move(traceId)));
     } else {
         // FIXME: ensure that MsgQoS has the same field identifier in all structures
         NKikimrBlobStorage::TEvVPut record;

@@ -194,7 +194,9 @@ public:
 
     void ReplyWithError(TItem& item, NKikimrProto::EReplyStatus status, const TString& errorReason, const TActorContext& ctx);
     bool Expecting(ui64 msgId, ui64 sequenceId) const;
+    bool Expecting(ui64 queueCookie) const;
     bool OnResponse(ui64 msgId, ui64 sequenceId, ui64 cookie, TActorId *outSender, ui64 *outCookie, TDuration *processingTime);
+    bool OnResponse(ui64 queueCookie, TActorId *outSender, ui64 *outCookie, TDuration *processingTime);
 
     void Unwind(ui64 failedMsgId, ui64 failedSequenceId, ui64 expectedMsgId, ui64 expectedSequenceId);
 

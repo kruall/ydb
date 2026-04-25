@@ -1,5 +1,7 @@
 #include "queue.h"
 
+#include <algorithm>
+
 namespace NKikimr::NBsQueue {
 
 TBlobStorageQueue::TBlobStorageQueue(const TIntrusivePtr<::NMonitoring::TDynamicCounters>& counters, TString& logPrefix,
@@ -157,7 +159,9 @@ void TBlobStorageQueue::SendToVDisk(const TActorContext& ctx, const TActorId& re
                 TYPE_CASE(TEvBlobStorage::TEvVMovedPatch)
                 TYPE_CASE(TEvBlobStorage::TEvVPut)
                 TYPE_CASE(TEvBlobStorage::TEvVMultiPut)
+                TYPE_CASE(TEvBlobStorage::TEvVPutFlat)
                 TYPE_CASE(TEvBlobStorage::TEvVGet)
+                TYPE_CASE(TEvBlobStorage::TEvVGetFlat)
                 TYPE_CASE(TEvBlobStorage::TEvVBlock)
                 TYPE_CASE(TEvBlobStorage::TEvVGetBlock)
                 TYPE_CASE(TEvBlobStorage::TEvVCollectGarbage)
@@ -256,6 +260,12 @@ bool TBlobStorageQueue::Expecting(ui64 msgId, ui64 sequenceId) const {
     return InFlightLookup.count(std::make_pair(sequenceId, msgId));
 }
 
+bool TBlobStorageQueue::Expecting(ui64 queueCookie) const {
+    return std::find_if(Queues.InFlight.begin(), Queues.InFlight.end(), [&](const TItem& item) {
+        return item.QueueCookie == queueCookie;
+    }) != Queues.InFlight.end();
+}
+
 bool TBlobStorageQueue::OnResponse(ui64 msgId, ui64 sequenceId, ui64 cookie, TActorId *outSender, ui64 *outCookie,
         TDuration *processingTime) {
     const auto lookupIt = InFlightLookup.find(std::make_pair(sequenceId, msgId));
@@ -289,6 +299,36 @@ bool TBlobStorageQueue::OnResponse(ui64 msgId, ui64 sequenceId, ui64 cookie, TAc
 
     ++*QueueItemsProcessed;
     return dsproxyAwaitingResponse;
+}
+
+bool TBlobStorageQueue::OnResponse(ui64 queueCookie, TActorId *outSender, ui64 *outCookie, TDuration *processingTime) {
+    const auto it = std::find_if(Queues.InFlight.begin(), Queues.InFlight.end(), [&](const TItem& item) {
+        return item.QueueCookie == queueCookie;
+    });
+    Y_ABORT_UNLESS(it != Queues.InFlight.end());
+
+    Y_ABORT_UNLESS(InFlightCost >= it->Cost);
+    InFlightCost -= it->Cost;
+
+    const bool relevant = it->Event.Relevant();
+
+    *outSender = it->Event.GetSender();
+    *outCookie = it->Event.GetCookie();
+    *processingTime = TDuration::Seconds(it->ProcessingTimer.Passed());
+    LWTRACK(DSQueueVPutResultRecieved, it->Event.GetOrbit(), processingTime->SecondsFloat() * 1e3,
+            it->Event.GetByteSize(), !relevant);
+
+    InFlightLookup.erase(std::make_pair(it->SequenceId, it->MsgId));
+    auto span = std::exchange(it->Span, {});
+    span.EndOk();
+    EraseItem(Queues.InFlight, it);
+
+    if (!InFlightLookup) {
+        Paused = false;
+    }
+
+    ++*QueueItemsProcessed;
+    return relevant;
 }
 
 void TBlobStorageQueue::Unwind(ui64 failedMsgId, ui64 failedSequenceId, ui64 expectedMsgId, ui64 expectedSequenceId) {

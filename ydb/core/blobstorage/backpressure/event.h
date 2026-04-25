@@ -12,7 +12,9 @@ template<> struct TMatchingResultType<TEvBlobStorage::TEvVPatchDiff> { using Typ
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVPatchXorDiff> { using Type = TEvBlobStorage::TEvVPatchXorDiffResult; };
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVPut> { using Type = TEvBlobStorage::TEvVPutResult; };
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVMultiPut> { using Type = TEvBlobStorage::TEvVMultiPutResult; };
+template<> struct TMatchingResultType<TEvBlobStorage::TEvVPutFlat> { using Type = TEvBlobStorage::TEvVPutResultFlat; };
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVGet> { using Type = TEvBlobStorage::TEvVGetResult; };
+template<> struct TMatchingResultType<TEvBlobStorage::TEvVGetFlat> { using Type = TEvBlobStorage::TEvVGetResultFlat; };
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVBlock> { using Type = TEvBlobStorage::TEvVBlockResult; };
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVGetBlock> { using Type = TEvBlobStorage::TEvVGetBlockResult; };
 template<> struct TMatchingResultType<TEvBlobStorage::TEvVCollectGarbage> { using Type = TEvBlobStorage::TEvVCollectGarbageResult; };
@@ -62,6 +64,7 @@ public:
         , BSProxyCtx(bspctx)
         , Tracker(std::move(ev->Get()->MessageRelevanceTracker))
     {
+        using TEvent = std::decay_t<decltype(*ev->Get())>;
         // trace the event
         if constexpr (std::is_same_v<TPtr, TEvBlobStorage::TEvVPut::TPtr>) {
             const auto& record = ev->Get()->Record;
@@ -71,9 +74,20 @@ public:
                     blob.BlobSize());
         }
 
-        if (local && ev->HasEvent()) {
-            ByteSize = ev->Get()->GetCachedByteSize();
-            LocalEvent.reset(ev->ReleaseBase().Release());
+        if constexpr (!std::is_same_v<TEvent, TEvBlobStorage::TEvVPutFlat>
+                && !std::is_same_v<TEvent, TEvBlobStorage::TEvVGetFlat>) {
+            if (local && ev->HasEvent()) {
+                ByteSize = ev->Get()->GetCachedByteSize();
+                LocalEvent.reset(ev->ReleaseBase().Release());
+            } else {
+                const bool hasEvent = ev->HasEvent();
+                Buffer = ev->ReleaseChainBuffer();
+                ByteSize = Buffer->GetSize();
+                if (hasEvent) {
+                    ++*serItems;
+                    *serBytes += ByteSize;
+                }
+            }
         } else {
             const bool hasEvent = ev->HasEvent();
             Buffer = ev->ReleaseChainBuffer();
@@ -113,7 +127,9 @@ public:
             CASE(TEvVPatchXorDiff);
             CASE(TEvVPut);
             CASE(TEvVMultiPut);
+            CASE(TEvVPutFlat);
             CASE(TEvVGet);
+            CASE(TEvVGetFlat);
             CASE(TEvVBlock);
             CASE(TEvVGetBlock);
             CASE(TEvVCollectGarbage);

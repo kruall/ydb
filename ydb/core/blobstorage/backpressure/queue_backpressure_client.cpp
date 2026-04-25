@@ -245,6 +245,44 @@ private:
         }
     }
 
+    template <typename TEvType, typename R>
+    void HandleFlatRequest(typename TEvType::TPtr& ev, const TActorContext &ctx) {
+        const auto msgQoS = static_cast<NVDiskFlat::TMsgQoSRaw>(
+            ev->Get()->template Field<typename TEvType::TMsgQoSTag>());
+        TInstant deadline = TInstant::Max();
+        if (msgQoS.HasDeadlineSeconds) {
+            deadline = TInstant::Seconds(msgQoS.DeadlineSeconds);
+        }
+
+        QLOG_DEBUG_S("BSQ54", "T# " << TypeName<decltype(*ev->Get())>()
+            << " deadline# " << deadline.ToString() << " State# " << GetStateName()
+            << " cookie# " << ev->Cookie);
+
+        if (IsReady()) {
+            Queue.Enqueue(ctx, ev, deadline, RemoteVDisk.NodeId() == SelfId().NodeId());
+            Pump(ctx);
+            UpdateRequestTrackingStats(ctx);
+        } else {
+            if constexpr (std::is_same_v<TEvType, TEvBlobStorage::TEvVPutFlat>) {
+                const TString errorReason = "BS_QUEUE is not ready";
+                ui64 cookie = ev->Get()->GetCookie();
+                const ui64 *cookiePtr = ev->Get()->GetFlags().HasCookie() ? &cookie : nullptr;
+                if (ev->Get()->IsSinglePut()) {
+                    ctx.Send(ev->Sender, TEvBlobStorage::TEvVPutResultFlat::MakeSinglePutResult(NKikimrProto::NOTREADY,
+                        ev->Get()->GetBlobID(), ev->Get()->GetVDiskID(), cookiePtr, TOutOfSpaceStatus(0, 0), 0,
+                        errorReason), 0, ev->Cookie);
+                } else {
+                    ctx.Send(ev->Sender, TEvBlobStorage::TEvVPutResultFlat::MakeMultiPutResult(NKikimrProto::NOTREADY,
+                        ev->Get()->GetVDiskID(), cookiePtr, TOutOfSpaceStatus(0, 0), 0, errorReason), 0, ev->Cookie);
+                }
+            } else {
+                auto reply = std::make_unique<R>();
+                reply->MakeError(NKikimrProto::NOTREADY, "BS_QUEUE is not ready", *ev->Get());
+                ctx.Send(ev->Sender, reply.release(), 0, ev->Cookie);
+            }
+        }
+    }
+
     void SendToVDisk(const TActorContext& ctx, std::unique_ptr<IEventBase>&& ev, ui64 cookie = 0,
             NWilson::TTraceId&& traceId = {}) {
         auto handle = std::make_unique<IEventHandle>(RemoteVDisk, SelfId(), ev.release(),
@@ -270,6 +308,7 @@ private:
                 case TEvBlobStorage::EvVPatchResult:
                 case TEvBlobStorage::EvVPutResult:
                 case TEvBlobStorage::EvVMultiPutResult:
+                case TEvBlobStorage::EvVPutResultFlat:
                 case TEvBlobStorage::EvVBlockResult:
                 case TEvBlobStorage::EvVGetBlockResult:
                 case TEvBlobStorage::EvVCollectGarbageResult:
@@ -278,6 +317,7 @@ private:
                     break;
 
                 case TEvBlobStorage::EvVGetResult:
+                case TEvBlobStorage::EvVGetResultFlat:
                 case TEvBlobStorage::EvVStatusResult:
                 case TEvBlobStorage::EvVAssimilateResult:
                     expected = InterconnectChannel;
@@ -514,6 +554,71 @@ private:
             << " status# " << NKikimrProto::EReplyStatus_Name(status)
             << " processingTime# " << processingTime
             << " dsproxyAwaitingResponse# " << dsproxyAwaitingResponse);
+
+        Pump(ctx);
+    }
+
+    template <typename T>
+    void HandleFlatResponse(T &ev, const TActorContext &ctx) {
+        if (!CheckReply(ev, ctx)) {
+            return;
+        }
+        UpdateRequestTrackingStats(ctx);
+
+        if (!IsReady()) {
+            QLOG_DEBUG_S("BSQ55", "T# " << TypeName<decltype(*ev->Get())>() << " NOT READY");
+            return;
+        }
+
+        auto *msg = ev->Get();
+        using TEv = std::decay_t<decltype(*msg)>;
+        const NKikimrProto::EReplyStatus status = msg->GetStatus();
+
+        if (!Queue.Expecting(ev->Cookie)) {
+            QLOG_DEBUG_S("BSQ57", "T# " << TypeName<TEv>() << " unexpected message"
+                << " Cookie# " << ev->Cookie);
+            return;
+        }
+
+        switch (status) {
+            case NKikimrProto::NOTREADY:
+                return ResetConnection(ctx, NKikimrProto::ERROR, "NOTREADY status in response", TDuration::Zero());
+
+            case NKikimrProto::VDISK_ERROR_STATE:
+                return ResetConnection(ctx, status, "VDISK_ERROR_STATE status in response", TDuration::Seconds(10));
+
+            case NKikimrProto::RACE:
+                if (RecentGroup && Max(RaceNotifiedGeneration, msg->GetVDiskID().GroupGeneration) <
+                        RecentGroup->GetGroupGeneration()) {
+                    auto ev = std::make_unique<TEvBlobStorage::TEvVCheckReadiness>();
+                    VDiskIDFromVDiskID(VDiskId, ev->Record.MutableVDiskID());
+                    ev->Record.MutableRecentGroup()->CopyFrom(*RecentGroup);
+                    auto *qos = ev->Record.MutableQoS();
+                    qos->SetExtQueueId(QueueId);
+                    Queue.GetClientId().Serialize(qos);
+                    RaceNotifiedGeneration = RecentGroup->GetGroupGeneration();
+                    SendToVDisk(ctx, std::move(ev));
+                }
+                break;
+
+            default:
+                break;
+        }
+
+        ResetWatchdogTimer(ctx.Now());
+
+        TActorId sender;
+        ui64 cookie = 0;
+        TDuration processingTime;
+        const bool isOk = Queue.OnResponse(ev->Cookie, &sender, &cookie, &processingTime);
+        if (isOk) {
+            NWilson::TTraceId traceId = std::move(ev->TraceId);
+            ctx.Send(sender, ev->Release().Release(), 0, cookie, std::move(traceId));
+        }
+        QLOG_DEBUG_S("BSQ56", "T# " << TypeName<TEv>()
+            << " status# " << NKikimrProto::EReplyStatus_Name(status)
+            << " processingTime# " << processingTime
+            << " isOk# " << isOk);
 
         Pump(ctx);
     }
@@ -933,6 +1038,12 @@ private:
         HandleRequest<TEvType::TPtr, TEvType, TEvResult>(*x, this->ActorContext()); \
         break; \
     }
+#define QueueFlatRequestSpecialHFunc(TEvType, TEvResult) \
+    case TEvType::EventType: { \
+        TEvType::TPtr *x = reinterpret_cast<TEvType::TPtr *>(&ev); \
+        HandleFlatRequest<TEvType, TEvResult>(*x, this->ActorContext()); \
+        break; \
+    }
 
     void ChangeGroupInfo(const TBlobStorageGroupInfo& info, const TActorContext& ctx) {
         if (info.GroupGeneration > VDiskId.GroupGeneration) { // ignore any possible races with old generations
@@ -969,7 +1080,9 @@ private:
     XX(TEvBlobStorage::EvVMovedPatch, EvVMovedPatch) \
     XX(TEvBlobStorage::EvVPut, EvVPut) \
     XX(TEvBlobStorage::EvVMultiPut, EvVMultiPut) \
+    XX(TEvBlobStorage::EvVPutFlat, EvVPutFlat) \
     XX(TEvBlobStorage::EvVGet, EvVGet) \
+    XX(TEvBlobStorage::EvVGetFlat, EvVGetFlat) \
     XX(TEvBlobStorage::EvVBlock, EvVBlock) \
     XX(TEvBlobStorage::EvVGetBlock, EvVGetBlock) \
     XX(TEvBlobStorage::EvVCollectGarbage, EvVCollectGarbage) \
@@ -977,7 +1090,9 @@ private:
     XX(TEvBlobStorage::EvVMovedPatchResult, EvVMovedPatchResult) \
     XX(TEvBlobStorage::EvVPutResult, EvVPutResult) \
     XX(TEvBlobStorage::EvVMultiPutResult, EvVMultiPutResult) \
+    XX(TEvBlobStorage::EvVPutResultFlat, EvVPutResultFlat) \
     XX(TEvBlobStorage::EvVGetResult, EvVGetResult) \
+    XX(TEvBlobStorage::EvVGetResultFlat, EvVGetResultFlat) \
     XX(TEvBlobStorage::EvVBlockResult, EvVBlockResult) \
     XX(TEvBlobStorage::EvVGetBlockResult, EvVGetBlockResult) \
     XX(TEvBlobStorage::EvVCollectGarbageResult, EvVCollectGarbageResult) \
@@ -1037,7 +1152,9 @@ private:
             QueueRequestHFunc(TEvBlobStorage::TEvVPatchXorDiff)
             QueueRequestHFunc(TEvBlobStorage::TEvVPut)
             QueueRequestHFunc(TEvBlobStorage::TEvVMultiPut)
+            QueueFlatRequestSpecialHFunc(TEvBlobStorage::TEvVPutFlat, TEvBlobStorage::TEvVPutResultFlat)
             QueueRequestHFunc(TEvBlobStorage::TEvVGet)
+            QueueFlatRequestSpecialHFunc(TEvBlobStorage::TEvVGetFlat, TEvBlobStorage::TEvVGetResultFlat)
             QueueRequestHFunc(TEvBlobStorage::TEvVBlock)
             QueueRequestHFunc(TEvBlobStorage::TEvVGetBlock)
             QueueRequestHFunc(TEvBlobStorage::TEvVCollectGarbage)
@@ -1049,7 +1166,9 @@ private:
             HFunc(TEvBlobStorage::TEvVPatchResult, HandleResponse)
             HFunc(TEvBlobStorage::TEvVPutResult, HandleResponse)
             HFunc(TEvBlobStorage::TEvVMultiPutResult, HandleResponse)
+            HFunc(TEvBlobStorage::TEvVPutResultFlat, HandleFlatResponse)
             HFunc(TEvBlobStorage::TEvVGetResult, HandleResponse)
+            HFunc(TEvBlobStorage::TEvVGetResultFlat, HandleFlatResponse)
             HFunc(TEvBlobStorage::TEvVBlockResult, HandleResponse)
             HFunc(TEvBlobStorage::TEvVGetBlockResult, HandleResponse)
             HFunc(TEvBlobStorage::TEvVCollectGarbageResult, HandleResponse)
