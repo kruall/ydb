@@ -451,6 +451,49 @@ SIMPLE_TEST_END(TSimple3PutRangeGetAllBackward, TBasePut3ForRange)
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class TBasePut3ForFlatRange : public TBasePut3ForRange {
+protected:
+    using TBasePut3ForRange::SendReadRequests;
+
+    void SendReadRequests(const TActorContext &ctx, const TLogoBlobID &from, const TLogoBlobID &to) override {
+        LOG_NOTICE(ctx, NActorsServices::TEST, "  Flat test: from=%s to=%s\n", from.ToString().data(), to.ToString().data());
+        auto req = TEvBlobStorage::TEvVGetFlat::CreateRangeIndexQuery(VDiskInfo.VDiskID, TInstant::Max(),
+                NKikimrBlobStorage::EGetHandleClass::AsyncRead, TEvBlobStorage::TEvVGet::EFlags::None, {},
+                from, to, 10);
+        ctx.Send(VDiskInfo.ActorID, req.release());
+    }
+
+public:
+    TBasePut3ForFlatRange(TConfiguration *conf, const TAllVDisks::TVDiskInstance &vDiskInfo, IDataSetPtr ds,
+                      bool waitForCompaction)
+        : TBasePut3ForRange(conf, vDiskInfo, ds, waitForCompaction)
+    {}
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+SIMPLE_TEST_BEGIN(TSimple3PutRangeFlatGetAllForward, TBasePut3ForFlatRange)
+using TBasePut3ForFlatRange::SendReadRequests;
+void SendReadRequests(const TActorContext &ctx) {
+    ExpectedSetAll();
+    TLogoBlobID from(DefaultTestTabletId, 0, 0, 0, 0, 0, 1);
+    TLogoBlobID to(DefaultTestTabletId, 4294967295, 4294967295, 0, 0, 0, TLogoBlobID::MaxPartId);
+    TBasePut3ForFlatRange::SendReadRequests(ctx, from, to);
+}
+SIMPLE_TEST_END(TSimple3PutRangeFlatGetAllForward, TBasePut3ForFlatRange)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+SIMPLE_TEST_BEGIN(TSimple3PutRangeFlatGetAllBackward, TBasePut3ForFlatRange)
+using TBasePut3ForFlatRange::SendReadRequests;
+void SendReadRequests(const TActorContext &ctx) {
+    ExpectedSetAll();
+    TLogoBlobID from(DefaultTestTabletId, 4294967295, 4294967295, 0, 0, 0, TLogoBlobID::MaxPartId);
+    TLogoBlobID to  (DefaultTestTabletId, 0, 0, 0, 0, 0, 1);
+    TBasePut3ForFlatRange::SendReadRequests(ctx, from, to);
+}
+SIMPLE_TEST_END(TSimple3PutRangeFlatGetAllBackward, TBasePut3ForFlatRange)
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 SIMPLE_TEST_BEGIN(TSimple3PutRangeGetNothingForward, TBasePut3ForRange)
 using TBasePut3ForRange::SendReadRequests;
 void SendReadRequests(const TActorContext &ctx) {

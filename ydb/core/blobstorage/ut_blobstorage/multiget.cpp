@@ -2,10 +2,13 @@
 
 Y_UNIT_TEST_SUITE(MultiGet) {
 
-    Y_UNIT_TEST(SequentialGet) {
+    void RunSequentialGet(bool enableFlatEvents) {
         TEnvironmentSetup env(false, TBlobStorageGroupType::Erasure4Plus2Block);
         auto& runtime = env.Runtime;
         env.CreateBoxAndPool();
+        if (enableFlatEvents) {
+            env.SetIcbControl(0, "BlobStorage.EnableVDiskFlatEvents", true);
+        }
         const ui32 groupId = env.GetGroups().front();
 
         const TActorId& edge = runtime->AllocateEdgeActor(1);
@@ -54,6 +57,14 @@ Y_UNIT_TEST_SUITE(MultiGet) {
         const ui64 rssOnEnd = rusage.MaxRss;
 
         Cerr << rssOnBegin << " -> " << rssOnEnd << Endl;
+    }
+
+    Y_UNIT_TEST(SequentialGet) {
+        RunSequentialGet(false);
+    }
+
+    Y_UNIT_TEST(SequentialGetFlatEvents) {
+        RunSequentialGet(true);
     }
 
 }

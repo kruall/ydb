@@ -363,6 +363,7 @@ void DecryptInplace(TRope& rope, ui32 offset, ui32 shift, ui32 size, const TLogo
 
 struct TBlobStorageGroupRangeParameters {
     TBlobStorageGroupRequestActor::TCommonParameters<TEvBlobStorage::TEvRange> Common;
+    bool EnableVDiskFlatEvents = false;
     TBlobStorageGroupRequestActor::TTypeSpecificParameters TypeSpecific = {
         .LogComponent = NKikimrServices::BS_PROXY_RANGE,
         .Name = "DSProxy.Range",

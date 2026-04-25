@@ -705,6 +705,13 @@ namespace NKikimr {
         return item.Flags.HasBlob();
     }
 
+    ui32 TEvBlobStorage::TEvVGetResultFlat::GetPart(const NVDiskFlat::TGetResultItemRaw& item, ui64 idx) const {
+        Y_ENSURE(idx < item.PartsCount, "Get result item part index is out of range");
+        auto parts = Array<TPartsTag>();
+        Y_ENSURE(item.PartsOffset + idx < parts.size(), "Get result parts array index is out of range");
+        return parts.Get(item.PartsOffset + idx);
+    }
+
     ui32 TEvBlobStorage::TEvVGetResultFlat::GetBlobSize(const NVDiskFlat::TGetResultItemRaw& item) const {
         return HasBlob(item) ? item.PayloadSize : 0;
     }

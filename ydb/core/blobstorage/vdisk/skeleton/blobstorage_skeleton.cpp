@@ -1295,8 +1295,6 @@ namespace NKikimr {
 
             if (!SelfVDiskId.SameDisk(ev->Get()->GetVDiskID())) {
                 ReplyError(NKikimrProto::RACE, "group generation mismatch", ev, ctx, now);
-            } else if (ev->Get()->IsRangeIndexQuery()) {
-                ReplyError(NKikimrProto::ERROR, "TEvVGetFlat range query is not implemented", ev, ctx, now);
             } else {
                 std::optional<THullDsSnap> fullSnap;
                 fullSnap.emplace(Hull->GetSnapshot());

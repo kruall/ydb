@@ -3,6 +3,7 @@
 #include "dsproxy_quorum_tracker.h"
 #include "dsproxy_blob_tracker.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo.h>
 
 namespace NKikimr {
@@ -22,6 +23,7 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor {
     const bool IsIndexOnly;
     const ui32 ForceBlockedGeneration;
     const bool Decommission;
+    const bool EnableVDiskFlatEvents;
 
     TMap<TLogoBlobID, TBlobStatusTracker> BlobStatus;
     TBlobStorageGroupInfo::TGroupVDisks FailedDisks;
@@ -45,6 +47,16 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor {
     }
 
     void SendQueryToVDisk(const TVDiskID &vdisk, const TLogoBlobID &from, const TLogoBlobID &to) {
+        if (EnableVDiskFlatEvents && !ForceBlockedGeneration) {
+            auto msg = TEvBlobStorage::TEvVGetFlat::CreateRangeIndexQuery(vdisk, Deadline,
+                NKikimrBlobStorage::EGetHandleClass::FastRead, TEvBlobStorage::TEvVGet::EFlags::ShowInternals,
+                {}, from, to, MaxBlobsToQueryAtOnce);
+            msg->SetSuppressBarrierCheck(true);
+            SendToQueue(std::move(msg), 0);
+            ++NumVGetsPending;
+            return;
+        }
+
         // prepare new index query message
         auto msg = TEvBlobStorage::TEvVGet::CreateRangeIndexQuery(vdisk, Deadline, NKikimrBlobStorage::EGetHandleClass::FastRead,
                 TEvBlobStorage::TEvVGet::EFlags::ShowInternals, {}, from, to, MaxBlobsToQueryAtOnce, nullptr,
@@ -58,6 +70,32 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor {
 
         // add pending count
         ++NumVGetsPending;
+    }
+
+    void UpdateBlobStatusFromFlatResult(const NVDiskFlat::TGetResultItemRaw& blob, TEvBlobStorage::TEvVGetResultFlat& ev,
+            const TVDiskID& vdisk) {
+        const TLogoBlobID blobId(NVDiskFlat::FromRaw(blob.BlobId));
+        NKikimrBlobStorage::TQueryResult pb;
+        LogoBlobIDFromLogoBlobID(blobId, pb.MutableBlobID());
+        pb.SetStatus(static_cast<NKikimrProto::EReplyStatus>(blob.Status));
+        if (blob.Flags.HasIngress()) {
+            pb.SetIngress(blob.Ingress);
+        }
+        if (blob.Flags.GetKeep()) {
+            pb.SetKeep(blob.Flags.GetKeep());
+        }
+        if (blob.Flags.GetDoNotKeep()) {
+            pb.SetDoNotKeep(blob.Flags.GetDoNotKeep());
+        }
+        for (ui32 i = 0; i < blob.PartsCount; ++i) {
+            pb.AddParts(ev.GetPart(blob, i));
+        }
+
+        auto it = BlobStatus.find(blobId.FullID());
+        if (it == BlobStatus.end()) {
+            it = BlobStatus.emplace(blobId.FullID(), TBlobStatusTracker(blobId.FullID(), Info.Get())).first;
+        }
+        it->second.UpdateFromResponseData(pb, vdisk, Info.Get());
     }
 
     void Handle(TEvBlobStorage::TEvVGetResult::TPtr &ev) {
@@ -175,6 +213,10 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor {
             }
         }
 
+        TryComplete();
+    }
+
+    void TryComplete() {
         if (!NumVGetsPending) {
             std::unique_ptr<TEvBlobStorage::TEvRangeResult> result;
             if (IsIndexOnly && !MustRestoreFirst) {
@@ -233,6 +275,110 @@ class TBlobStorageGroupRangeRequest : public TBlobStorageGroupRequestActor {
                 ReplyAndDie(NKikimrProto::OK);
             }
         }
+    }
+
+    void Handle(TEvBlobStorage::TEvVGetResultFlat::TPtr &ev) {
+        ProcessReplyFromQueue(ev->Get());
+
+        const NKikimrProto::EReplyStatus status = ev->Get()->GetStatus();
+        const TVDiskID vdisk = ev->Get()->GetVDiskID();
+
+        DSP_LOG_DEBUG_S("DSR10", "received"
+            << " VDiskId# " << vdisk
+            << " TEvVGetResultFlat# " << ev->Get()->ToString());
+
+        Y_ABORT_UNLESS(NumVGetsPending > 0);
+        --NumVGetsPending;
+
+        bool isOk = status == NKikimrProto::OK;
+        switch (status) {
+            case NKikimrProto::ERROR:
+            case NKikimrProto::VDISK_ERROR_STATE:
+                FailedDisks |= TBlobStorageGroupInfo::TGroupVDisks(&Info->GetTopology(), vdisk);
+                if (!Info->GetQuorumChecker().CheckFailModelForGroup(FailedDisks)) {
+                    ErrorReason = "Failed disks check fails on non-OK flat event status";
+                    return ReplyAndDie(NKikimrProto::ERROR);
+                }
+                break;
+
+            case NKikimrProto::OK:
+                if (ev->Get()->GetItemsCount() == 0 && ev->Get()->IsRangeOverflow()) {
+                    isOk = false;
+                    DSP_LOG_CRIT_S("DSR11", "Don't know how to interpret an empty range with IsRangeOverflow set." <<
+                            " TEvVGetResultFlat# " << ev->Get()->ToString());
+                    FailedDisks |= TBlobStorageGroupInfo::TGroupVDisks(&Info->GetTopology(), vdisk);
+                    if (!Info->GetQuorumChecker().CheckFailModelForGroup(FailedDisks)) {
+                        ErrorReason = "Failed disks check fails on OK flat event status";
+                        return ReplyAndDie(NKikimrProto::ERROR);
+                    }
+                }
+                break;
+
+            default:
+                Y_ABORT("unexpected queryStatus# %s", NKikimrProto::EReplyStatus_Name(status).data());
+        }
+
+        if (isOk) {
+            TLogoBlobID lastBlobId = From;
+            for (ui32 i = 0; i < ev->Get()->GetItemsCount(); ++i) {
+                const auto blob = ev->Get()->GetItem(i);
+                const TLogoBlobID blobId(NVDiskFlat::FromRaw(blob.BlobId));
+                const TLogoBlobID fullId(blobId.FullID());
+
+                Y_ABORT_UNLESS(blobId == fullId);
+                UpdateBlobStatusFromFlatResult(blob, *ev->Get(), vdisk);
+
+                Y_ABORT_UNLESS(From <= To ? lastBlobId <= fullId : lastBlobId >= fullId,
+                        "Blob IDs are out of order in TEvVGetResultFlat");
+                lastBlobId = fullId;
+            }
+
+            if (ev->Get()->GetItemsCount() >= MaxBlobsToQueryAtOnce || ev->Get()->IsRangeOverflow()) {
+                TLogoBlobID from(From), to(To);
+                bool send = true;
+
+                ui32 cookie = lastBlobId.Cookie();
+                ui32 step = lastBlobId.Step();
+                ui32 generation = lastBlobId.Generation();
+                ui8 channel = lastBlobId.Channel();
+
+                if (from <= to) {
+                    if (cookie++ == TLogoBlobID::MaxCookie) {
+                        cookie = 0;
+                        if (step++ == Max<ui32>()) {
+                            if (generation++ == Max<ui32>()) {
+                                if (channel++ == Max<ui8>()) {
+                                    send = false;
+                                }
+                            }
+                        }
+                    }
+
+                    from = TLogoBlobID(TabletId, generation, step, channel, 0, cookie);
+                    send = send && from <= to;
+                } else {
+                    if (!cookie--) {
+                        cookie = TLogoBlobID::MaxCookie;
+                        if (!step--) {
+                            if (!generation--) {
+                                if (!channel--) {
+                                    send = false;
+                                }
+                            }
+                        }
+                    }
+
+                    from = TLogoBlobID(TabletId, generation, step, channel, TLogoBlobID::MaxBlobSize, cookie);
+                    send = send && to < from;
+                }
+
+                if (send) {
+                    SendQueryToVDisk(vdisk, from, to);
+                }
+            }
+        }
+
+        TryComplete();
     }
 
     void SendGetRequest() {
@@ -347,6 +493,7 @@ public:
         , IsIndexOnly(params.Common.Event->IsIndexOnly)
         , ForceBlockedGeneration(params.Common.Event->ForceBlockedGeneration)
         , Decommission(params.Common.Event->Decommission)
+        , EnableVDiskFlatEvents(params.EnableVDiskFlatEvents)
         , FailedDisks(&Info->GetTopology())
     {}
 
@@ -380,6 +527,7 @@ public:
         }
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvBlobStorage::TEvVGetResult, Handle);
+            hFunc(TEvBlobStorage::TEvVGetResultFlat, Handle);
         }
     }
 

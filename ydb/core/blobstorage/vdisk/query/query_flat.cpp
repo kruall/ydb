@@ -86,10 +86,10 @@ namespace NKikimr {
         }
 
         template <class T>
-        void SendResponseAndDie(const TActorContext &ctx, T *self) {
+        void SendResponseAndDie(const TActorContext &ctx, T *self, bool failOnResultSizeOverflow = true) {
             bool hasNotYet = false;
 
-            if (ResultSize.IsOverflow()) {
+            if (failOnResultSizeOverflow && ResultSize.IsOverflow()) {
                 auto msg = VDISKP(QueryCtx->HullCtx->VCtx->VDiskLogPrefix,
                             "TEvVGetResultFlat: Result message is too large; size# %" PRIu64 " orig# %s;"
                             " VDISK CAN NOT REPLY ON TEvVGetFlat REQUEST",
@@ -217,6 +217,129 @@ namespace NKikimr {
                     std::move(barrierSnapshot), ev, std::move(result), replSchedulerId,
                     "VDisk.LevelIndexExtremeQueryFlatIndexOnly")
             , TActorBootstrapped<TLevelIndexExtremeQueryFlatIndexOnly>()
+            , Merger(QueryCtx->HullCtx->VCtx->Top->GType)
+        {}
+    };
+
+    class TLevelIndexRangeQueryFlatIndexOnly
+        : public TLevelIndexExtremeQueryFlatBase
+        , public TActorBootstrapped<TLevelIndexRangeQueryFlatIndexOnly>
+    {
+        using TIndexRecordMerger = ::NKikimr::TIndexRecordMerger<TKeyLogoBlob, TMemRecLogoBlob>;
+        friend class TLevelIndexExtremeQueryFlatBase;
+        friend class TActorBootstrapped<TLevelIndexRangeQueryFlatIndexOnly>;
+
+        TLogoBlobsSnapshot::TForwardIterator ForwardIt;
+        TLogoBlobsSnapshot::TBackwardIterator BackwardIt;
+        TLogoBlobID First;
+        TLogoBlobID Last;
+        ui32 FirstPartId = 0;
+        ui32 LastPartId = 0;
+        ui64 CookieVal = 0;
+        ui64 *CookiePtr = nullptr;
+        bool DirectionForward = false;
+        ui32 Counter = 0;
+        TIntrusivePtr<TBarriersSnapshot::TBarriersEssence> BarriersEssence;
+        TIndexRecordMerger Merger;
+
+        void PrepareRange() {
+            const auto query = OrigEv->Get()->GetRangeQuery();
+            First = NVDiskFlat::FromRaw(query.From);
+            FirstPartId = First.PartId();
+            First = TLogoBlobID(First, 0);
+            Last = NVDiskFlat::FromRaw(query.To);
+            LastPartId = Last.PartId();
+            Last = TLogoBlobID(Last, 0);
+            CookieVal = query.Cookie;
+            CookiePtr = query.Flags.HasCookie() ? &CookieVal : nullptr;
+            Counter = query.Flags.HasMaxResults() ? query.MaxResults : Max<ui32>();
+
+            if (First <= Last) {
+                DirectionForward = true;
+                ForwardIt.Seek(First);
+            } else {
+                DirectionForward = false;
+                DoSwap(First, Last);
+                DoSwap(FirstPartId, LastPartId);
+                BackwardIt.Seek(Last);
+            }
+
+            const ui64 firstTabletId = Min(First.TabletID(), Last.TabletID());
+            const ui64 lastTabletId = Max(First.TabletID(), Last.TabletID());
+            BarriersEssence = BarriersSnapshot.CreateEssence(QueryCtx->HullCtx, firstTabletId, lastTabletId, 0);
+            BarriersSnapshot.Destroy();
+        }
+
+        template<typename TMerger>
+        void AddIndexOnly(const TLogoBlobID &logoBlobId, const TMerger &merger) {
+            const auto &status = BarriersEssence->Keep(logoBlobId, merger.GetMemRec(), {},
+                QueryCtx->HullCtx->AllowKeepFlags, true /*allowGarbageCollection*/);
+            if (status.KeepData) {
+                const TIngress &ingress = merger.GetMemRec().GetIngress();
+                ui64 ingr = ingress.Raw();
+                ui64 *pingr = ShowInternals ? &ingr : nullptr;
+                Y_VERIFY_S(logoBlobId.PartId() == 0, QueryCtx->HullCtx->VCtx->VDiskLogPrefix);
+                const NMatrix::TVectorType local = ingress.LocalParts(QueryCtx->HullCtx->VCtx->Top->GType);
+
+                const int mode = ingress.GetCollectMode(TIngress::IngressMode(QueryCtx->HullCtx->VCtx->Top->GType));
+                const bool keep = (mode & CollectModeKeep) && !(mode & CollectModeDoNotKeep);
+                const bool doNotKeep = mode & CollectModeDoNotKeep;
+
+                Result->AddResult(NKikimrProto::OK, logoBlobId, CookiePtr, pingr, &local, keep, doNotKeep);
+                --Counter;
+                ResultSize.AddLogoBlobIndex();
+            }
+        }
+
+        void Bootstrap(const TActorContext &ctx) {
+            PrepareRange();
+            MainCycleIndexOnly(ctx);
+        }
+
+        void MainCycleIndexOnly(const TActorContext &ctx) {
+            if (DirectionForward) {
+                while (Counter > 0 && !ResultSize.IsOverflow() && ForwardIt.Valid() && ForwardIt.GetCurKey() <= Last) {
+                    ForwardIt.PutToMerger(&Merger);
+                    Merger.Finish();
+                    AddIndexOnly(ForwardIt.GetCurKey().LogoBlobID(), Merger);
+                    Merger.Clear();
+                    ForwardIt.Next();
+                }
+            } else {
+                while (Counter > 0 && !ResultSize.IsOverflow() && BackwardIt.Valid() && BackwardIt.GetCurKey() >= First) {
+                    BackwardIt.PutToMerger(&Merger);
+                    Merger.Finish();
+                    AddIndexOnly(BackwardIt.GetCurKey().LogoBlobID(), Merger);
+                    Merger.Clear();
+                    BackwardIt.Prev();
+                }
+            }
+            if (Counter == 0 || ResultSize.IsOverflow()) {
+                Result->MarkRangeOverflow();
+            }
+
+            SendResponseAndDie(ctx, this, false);
+        }
+
+    public:
+        static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+            return NKikimrServices::TActivity::BS_HULLQUERY_RANGE_INDEX_ONLY;
+        }
+
+        TLevelIndexRangeQueryFlatIndexOnly(
+                std::shared_ptr<TQueryCtx> &queryCtx,
+                const TActorId &parentId,
+                TLogoBlobsSnapshot &&logoBlobsSnapshot,
+                TBarriersSnapshot &&barrierSnapshot,
+                TEvBlobStorage::TEvVGetFlat::TPtr &ev,
+                std::unique_ptr<TEvBlobStorage::TEvVGetResultFlat> result,
+                TActorId replSchedulerId)
+            : TLevelIndexExtremeQueryFlatBase(queryCtx, parentId, std::move(logoBlobsSnapshot),
+                    std::move(barrierSnapshot), ev, std::move(result), replSchedulerId,
+                    "VDisk.LevelIndexRangeQueryFlatIndexOnly")
+            , TActorBootstrapped<TLevelIndexRangeQueryFlatIndexOnly>()
+            , ForwardIt(QueryCtx->HullCtx, &LogoBlobsSnapshot)
+            , BackwardIt(QueryCtx->HullCtx, &LogoBlobsSnapshot)
             , Merger(QueryCtx->HullCtx->VCtx->Top->GType)
         {}
     };
@@ -395,7 +518,7 @@ namespace NKikimr {
                     TEvBlobStorage::TEvVGetFlat::TPtr &ev,
                     std::unique_ptr<TEvBlobStorage::TEvVGetResultFlat> result,
                     TActorId replSchedulerId) {
-        if (queryCtx->HullCtx->BarrierValidation) {
+        if (queryCtx->HullCtx->BarrierValidation && ev->Get()->IsExtremeQuery()) {
             TLogoBlobsSnapshot::TIndexForwardIterator it(fullSnap.HullCtx, &fullSnap.LogoBlobsSnap);
             for (ui32 i = 0; i < ev->Get()->GetExtremeQueriesCount(); ++i) {
                 const auto item = ev->Get()->GetExtremeQuery(i);
@@ -423,6 +546,9 @@ namespace NKikimr {
                     std::move(fullSnap.LogoBlobsSnap), std::move(fullSnap.BarriersSnap), ev, std::move(result), replSchedulerId);
         } else if (ev->Get()->IsExtremeDataQuery()) {
             return new TLevelIndexExtremeQueryFlatData(queryCtx, parentId,
+                    std::move(fullSnap.LogoBlobsSnap), std::move(fullSnap.BarriersSnap), ev, std::move(result), replSchedulerId);
+        } else if (ev->Get()->IsRangeIndexQuery()) {
+            return new TLevelIndexRangeQueryFlatIndexOnly(queryCtx, parentId,
                     std::move(fullSnap.LogoBlobsSnap), std::move(fullSnap.BarriersSnap), ev, std::move(result), replSchedulerId);
         } else {
             return nullptr;

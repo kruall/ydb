@@ -739,6 +739,7 @@ namespace NKikimr {
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
         ui32 GetBlockedGeneration() const { return Field<TBlockedGenerationTag>(); }
         TString GetErrorReason() const { return Bytes<TErrorReasonTag>().Materialize(); }
+        bool IsRangeOverflow() const { return static_cast<NVDiskFlat::TGetResultFlagsRaw>(Field<TFlagsTag>()).GetIsRangeOverflow(); }
         bool HasCookie() const { return static_cast<NVDiskFlat::TGetResultFlagsRaw>(Field<TFlagsTag>()).HasCookie(); }
         ui64 GetCookie() const { return Field<TCookieTag>(); }
         ui64 GetItemsCount() const { return ArraySize<TItemsTag>(); }
@@ -747,6 +748,7 @@ namespace NKikimr {
             Y_ENSURE(idx < items.size(), "Get result item index is out of range");
             return items.Get(idx);
         }
+        ui32 GetPart(const NVDiskFlat::TGetResultItemRaw& item, ui64 idx) const;
         bool HasBlob(const NVDiskFlat::TGetResultItemRaw& item) const;
         ui32 GetBlobSize(const NVDiskFlat::TGetResultItemRaw& item) const;
         TRope GetBlobData(const NVDiskFlat::TGetResultItemRaw& item) const;

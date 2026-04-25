@@ -123,7 +123,12 @@ Y_UNIT_TEST_SUITE(TBsVDiskExtreme) {
     // TODO: https://github.com/ydb-platform/ydb/issues/32548
     // Y_UNIT_TEST_COMP_DISK(Simple3Put1GetMissingPartFresh, TSimple3Put1GetMissingPart, TFastVDiskSetup, false, 0, DG_3PUT)
     // Y_UNIT_TEST_COMP_DISK(Simple3Put1GetMissingPartCompaction, TSimple3Put1GetMissingPart, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
-    // TODO: Make range queries
+
+    Y_UNIT_TEST_COMP_DISK(Simple3PutRangeFlatGetAllForwardFresh, TSimple3PutRangeFlatGetAllForward, TFastVDiskSetup, false, 0, DG_3PUT)
+    Y_UNIT_TEST_COMP_DISK(Simple3PutRangeFlatGetAllForwardCompaction, TSimple3PutRangeFlatGetAllForward, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
+    Y_UNIT_TEST_COMP_DISK(Simple3PutRangeFlatGetAllBackwardFresh, TSimple3PutRangeFlatGetAllBackward, TFastVDiskSetup, false, 0, DG_3PUT)
+    Y_UNIT_TEST_COMP_DISK(Simple3PutRangeFlatGetAllBackwardCompaction, TSimple3PutRangeFlatGetAllBackward, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
+
     // TODO: Block and read block
 }
 

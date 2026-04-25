@@ -284,7 +284,7 @@ namespace NKikimr {
                     .Event = ev->Get(),
                     .ExecutionRelay = ev->Get()->ExecutionRelay,
                     .ForceGroupGeneration = ev->Get()->ForceGroupGeneration,
-                }
+                },
             }),
             ev->Get()->Deadline
         );
@@ -308,7 +308,7 @@ namespace NKikimr {
                     .Event = ev->Get(),
                     .ExecutionRelay = ev->Get()->ExecutionRelay,
                     .ForceGroupGeneration = ev->Get()->ForceGroupGeneration,
-                }
+                },
             }),
             ev->Get()->Deadline
         );
@@ -332,7 +332,7 @@ namespace NKikimr {
                     .Event = ev->Get(),
                     .ExecutionRelay = ev->Get()->ExecutionRelay,
                     .ForceGroupGeneration = ev->Get()->ForceGroupGeneration,
-                }
+                },
             }),
             ev->Get()->Deadline
         );
@@ -402,7 +402,7 @@ namespace NKikimr {
                     .LogAccEnabled = (erasure != TBlobStorageGroupType::ErasureMirror3dc) &&
                             (erasure != TBlobStorageGroupType::ErasureMirror3of4),
                     .ForceGroupGeneration = ev->Get()->ForceGroupGeneration,
-                }
+                },
             }),
             ev->Get()->Deadline
         );
@@ -431,7 +431,8 @@ namespace NKikimr {
                     .Event = ev->Get(),
                     .ExecutionRelay = ev->Get()->ExecutionRelay,
                     .ForceGroupGeneration = ev->Get()->ForceGroupGeneration,
-                }
+                },
+                .EnableVDiskFlatEvents = static_cast<bool>(Controls.EnableVDiskFlatEvents.Update(TActivationContext::Now())),
             }),
             ev->Get()->Deadline
         );
