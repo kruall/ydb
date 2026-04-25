@@ -727,6 +727,13 @@ namespace NKikimr {
     bool TBlobStorageGroupRequestActor::CheckForTermErrors(bool suppressCommonErrors, const NProtoBuf::Message& record,
             ui32 type, NKikimrProto::EReplyStatus status, TVDiskID vdiskId, const NKikimrBlobStorage::TGroupInfo *group,
             bool& setErrorAndPostpone, bool& setRaceToError) {
+        return CheckForTermErrors(suppressCommonErrors, SingleLineProto(record), type, status, vdiskId, group,
+            setErrorAndPostpone, setRaceToError);
+    }
+
+    bool TBlobStorageGroupRequestActor::CheckForTermErrors(bool suppressCommonErrors, const TString& recordDebug,
+            ui32 type, NKikimrProto::EReplyStatus status, TVDiskID vdiskId, const NKikimrBlobStorage::TGroupInfo *group,
+            bool& setErrorAndPostpone, bool& setRaceToError) {
         if (status == NKikimrProto::NOTREADY) { // special case from BS_QUEUE -- when connection is not yet established
             setErrorAndPostpone = true;
             return true; // event has been processed early
@@ -749,7 +756,7 @@ namespace NKikimr {
         Y_VERIFY_S(status == NKikimrProto::RACE || vdiskId.GroupGeneration <= Info->GroupGeneration ||
             type == TEvBlobStorage::EvVStatusResult || type == TEvBlobStorage::EvVAssimilateResult,
             "status# " << NKikimrProto::EReplyStatus_Name(status) << " vdiskId.GroupGeneration# " << vdiskId.GroupGeneration
-            << " Info->GroupGeneration# " << Info->GroupGeneration << " Response# " << SingleLineProto(record));
+            << " Info->GroupGeneration# " << Info->GroupGeneration << " Response# " << recordDebug);
 
         if (status != NKikimrProto::RACE && status != NKikimrProto::BLOCKED && status != NKikimrProto::DEADLINE) {
             return false; // these statuses are non-terminal
@@ -763,7 +770,7 @@ namespace NKikimr {
         }
 
         DSP_LOG_INFO_S("DSP99", "Handing RACE response from " << vdiskId << " GroupGeneration# " << Info->GroupGeneration
-            << " Response# " << SingleLineProto(record));
+            << " Response# " << recordDebug);
 
         // process the RACE status
         Y_ABORT_UNLESS(status == NKikimrProto::RACE);
@@ -789,7 +796,7 @@ namespace NKikimr {
                 "ForceGroupGeneration# " << *ForceGroupGeneration
                 << " Info->GroupGeneration# " << Info->GroupGeneration
                 << " VDiskId# " << vdiskId.ToString()
-                << " Record# " << SingleLineProto(record)
+                << " Record# " << recordDebug
                 << " Type# " << type);
             return done(NKikimrProto::RACE, "forced group generation mismatch");
         } else {
@@ -841,6 +848,24 @@ namespace NKikimr {
             return result;
         };
 
+        auto processFlatEventKind = [&](auto *record, ui32 type) {
+            bool setErrorAndPostpone = false;
+            bool setRaceToError = false;
+            const bool result = CheckForTermErrors(suppressCommonErrors, record->ToString(), type, record->GetStatus(),
+                record->GetVDiskID(), nullptr, setErrorAndPostpone, setRaceToError);
+            if (setErrorAndPostpone) {
+                record->template Field<typename std::decay_t<decltype(*record)>::TStatusTag>() =
+                    static_cast<ui32>(NKikimrProto::ERROR);
+                PostponedQ.emplace_back(ev.Release());
+                CheckPostponedQueue();
+            }
+            if (setRaceToError) {
+                record->template Field<typename std::decay_t<decltype(*record)>::TStatusTag>() =
+                    static_cast<ui32>(NKikimrProto::ERROR);
+            }
+            return result;
+        };
+
         switch (const ui32 type = ev->GetTypeRewrite()) {
 #define CHECK(T) case TEvBlobStorage::T::EventType: return processEventKind(ev->Get<TEvBlobStorage::T>()->Record, type);
             CHECK(TEvVPutResult);
@@ -853,6 +878,11 @@ namespace NKikimr {
             CHECK(TEvVStatusResult);
             CHECK(TEvVAssimilateResult);
 #undef CHECK
+
+            case TEvBlobStorage::TEvVPutResultFlat::EventType:
+                return processFlatEventKind(ev->Get<TEvBlobStorage::TEvVPutResultFlat>(), type);
+            case TEvBlobStorage::TEvVGetResultFlat::EventType:
+                return processFlatEventKind(ev->Get<TEvBlobStorage::TEvVGetResultFlat>(), type);
 
             case TEvBlobStorage::EvProxySessionsState: {
                 GroupQueues = ev->Get<TEvProxySessionsState>()->GroupQueues;

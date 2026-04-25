@@ -277,8 +277,11 @@ public:
     TActorId GetVDiskActorId(const TVDiskIdShort &shortId) const;
 
     bool CheckForTermErrors(bool suppressCommonErrors, const NProtoBuf::Message& record, ui32 type,
-        NKikimrProto::EReplyStatus status, TVDiskID vdiskId, const NKikimrBlobStorage::TGroupInfo *group,
-        bool& setErrorAndPostpone, bool& setRaceToError);
+            NKikimrProto::EReplyStatus status, TVDiskID vdiskId, const NKikimrBlobStorage::TGroupInfo *group,
+            bool& setErrorAndPostpone, bool& setRaceToError);
+    bool CheckForTermErrors(bool suppressCommonErrors, const TString& recordDebug, ui32 type,
+            NKikimrProto::EReplyStatus status, TVDiskID vdiskId, const NKikimrBlobStorage::TGroupInfo *group,
+            bool& setErrorAndPostpone, bool& setRaceToError);
     bool ProcessEvent(TAutoPtr<IEventHandle>& ev, bool suppressCommonErrors = false);
 
     void SendToQueue(std::unique_ptr<IEventBase> event, ui64 cookie, bool timeStatsEnabled = false);
