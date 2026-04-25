@@ -16,6 +16,7 @@ SRCS(
     query_base.h
     query_dumpdb.h
     query_extr.cpp
+    query_flat.cpp
     query_public.cpp
     query_public.h
     query_range.cpp

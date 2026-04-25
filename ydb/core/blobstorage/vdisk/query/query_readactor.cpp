@@ -78,7 +78,7 @@ namespace NKikimr {
                 for (auto it = Result->GlueReads.begin(); it != Result->GlueReads.end(); ++it) {
                     str << (it != Result->GlueReads.begin() ? " " : "") << it->Part.ToString();
                 }
-                str << "] OrigEv# " << Ctx->OrigEv->Get()->ToString() << " DataItems# [";
+                str << "] OrigEv# " << Ctx->OrigEvString << " DataItems# [";
                 for (auto it = Result->DataItems.begin(); it != Result->DataItems.end(); ++it) {
                     str << (it != Result->DataItems.begin() ? " " : "") << it->ToString();
                 }

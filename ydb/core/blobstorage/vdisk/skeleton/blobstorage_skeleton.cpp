@@ -1287,8 +1287,43 @@ namespace NKikimr {
 
         void Handle(TEvBlobStorage::TEvVGetFlat::TPtr &ev, const TActorContext &ctx) {
             IFaceMonGroup->GetMsgs()++;
-            ReplyError(NKikimrProto::ERROR, "TEvVGetFlat is not implemented in VDisk query actor", ev, ctx,
-                TAppData::TimeProvider->Now());
+            TInstant now = TAppData::TimeProvider->Now();
+
+            LOG_DEBUG_S(ctx, BS_VDISK_GET, VCtx->VDiskLogPrefix
+                    << "TEvVGetFlat: " << ev->Get()->ToString()
+                    << " Marker# BSVS81");
+
+            if (!SelfVDiskId.SameDisk(ev->Get()->GetVDiskID())) {
+                ReplyError(NKikimrProto::RACE, "group generation mismatch", ev, ctx, now);
+            } else if (ev->Get()->IsRangeIndexQuery()) {
+                ReplyError(NKikimrProto::ERROR, "TEvVGetFlat range query is not implemented", ev, ctx, now);
+            } else {
+                std::optional<THullDsSnap> fullSnap;
+                fullSnap.emplace(Hull->GetSnapshot());
+
+                TMaybe<ui64> cookie;
+                if (ev->Get()->HasCookie()) {
+                    cookie = ev->Get()->GetCookie();
+                }
+                auto result = std::unique_ptr<TEvBlobStorage::TEvVGetResultFlat>(
+                    TEvBlobStorage::TEvVGetResultFlat::Make(NKikimrProto::OK, SelfVDiskId, cookie,
+                        Db->GetVDiskIncarnationGuid()));
+                result->MsgCtx = ev->Get()->MsgCtx;
+                result->SkeletonFrontIDPtr = ev->Get()->SkeletonFrontIDPtr;
+
+                auto keepChecker = [&hull=Hull] (const TLogoBlobID& id, bool keepByIngress, TString *explanation) {
+                    return hull->FastKeep(id, keepByIngress, explanation);
+                };
+                IActor *actor = CreateLevelIndexQueryActor(QueryCtx, std::move(keepChecker), ctx,
+                    std::move(*fullSnap), ctx.SelfID, ev, std::move(result), Db->ReplID);
+
+                if (actor) {
+                    auto aid = ctx.Register(actor);
+                    ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                } else {
+                    ReplyError(NKikimrProto::ERROR, "incorrect TEvVGetFlat query", ev, ctx, now);
+                }
+            }
         }
 
         void Handle(TEvBlobStorage::TEvVGet::TPtr &ev, const TActorContext &ctx) {

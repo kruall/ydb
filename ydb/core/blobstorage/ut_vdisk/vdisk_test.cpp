@@ -103,6 +103,11 @@ Y_UNIT_TEST_SUITE(TBsVDiskExtreme) {
     Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqGetAllFresh, TSimple3Put1SeqGetAll, TFastVDiskSetup, false, 0, DG_3PUT)
     Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqGetAllCompaction, TSimple3Put1SeqGetAll, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
 
+    Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqFlatGetAllFresh, TSimple3Put1SeqFlatGetAll, TFastVDiskSetup, false, 0, DG_3PUT)
+    Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqFlatGetAllCompaction, TSimple3Put1SeqFlatGetAll, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
+    Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqFlatIndexGetAllFresh, TSimple3Put1SeqFlatIndexGetAll, TFastVDiskSetup, false, 0, DG_3PUT)
+    Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqFlatIndexGetAllCompaction, TSimple3Put1SeqFlatIndexGetAll, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
+
     Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqGet2Fresh, TSimple3Put1SeqGet2, TFastVDiskSetup, false, 0, DG_3PUT)
     Y_UNIT_TEST_COMP_DISK(Simple3Put1SeqGet2Compaction, TSimple3Put1SeqGet2, TFastVDiskSetupCompacted, true, 0, DG_3PUT)
 

@@ -543,9 +543,7 @@ namespace NKikimr {
                 return false;
             }
         }
-        if (GetVDiskID().GroupID == TGroupId::Zero()) {
-            errorReason = "TEvVGetFlat rejected by VDisk. It has no VDiskID::GroupID";
-        } else if (GetExtQueueId() == NKikimrBlobStorage::EVDiskQueueId::Unknown) {
+        if (GetExtQueueId() == NKikimrBlobStorage::EVDiskQueueId::Unknown) {
             errorReason = "TEvVGetFlat rejected by VDisk. ExtQueueId is undefined";
         } else {
             return true;
@@ -558,11 +556,7 @@ namespace NKikimr {
         str << "{EvVGetFlat";
         if (IsExtremeQuery()) {
             const bool index = IsExtremeIndexQuery();
-            const auto frontendIndex = GetFrontend<TExtremeIndexV1>();
-            const auto frontendData = GetFrontend<TExtremeDataV1>();
-            const size_t size = index
-                ? frontendIndex.template ArraySize<TExtremeQueriesTag>()
-                : frontendData.template ArraySize<TExtremeQueriesTag>();
+            const size_t size = GetExtremeQueriesCount();
             str << (index ? " ExtremeIndex" : " ExtremeData") << " Items# " << size;
         } else if (IsRangeIndexQuery()) {
             const auto query = static_cast<NVDiskFlat::TRangeQueryRaw>(GetFrontend<TRangeIndexV1>().template Field<TRangeQueryTag>());
@@ -667,6 +661,9 @@ namespace NKikimr {
         auto frontend = GetFrontend<TV1>();
         frontend.template Field<TStatusTag>() = static_cast<ui32>(status);
         frontend.template Field<TVDiskIdTag>() = NVDiskFlat::ToRaw(request.GetVDiskID());
+        frontend.template Array<TItemsTag>().Clear();
+        frontend.template Bytes<TPayloadTag>().Clear();
+        frontend.template Array<TPartsTag>().Clear();
         frontend.template Bytes<TErrorReasonTag>().Set(TRope(errorReason));
 
         if (request.IsExtremeQuery()) {

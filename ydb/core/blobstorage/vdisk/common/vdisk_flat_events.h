@@ -646,6 +646,8 @@ namespace NKikimr {
 
         TVDiskID GetVDiskID() const { return NVDiskFlat::FromRaw(Field<TVDiskIdTag>()); }
         NVDiskFlat::TGetFlagsRaw GetFlags() const { return Field<TFlagsTag>(); }
+        bool HasCookie() const { return GetFlags().HasCookie(); }
+        ui64 GetCookie() const { return Field<TCookieTag>(); }
         NKikimrBlobStorage::EGetHandleClass GetHandleClass() const {
             return static_cast<NKikimrBlobStorage::EGetHandleClass>(static_cast<ui32>(Field<THandleClassTag>()));
         }

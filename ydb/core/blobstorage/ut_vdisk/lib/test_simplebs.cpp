@@ -1,6 +1,7 @@
 #include "test_simplebs.h"
 #include "helpers.h"
 
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 
 using namespace NKikimr;
 
@@ -68,6 +69,25 @@ private:
 
     }
 
+    void Handle(TEvBlobStorage::TEvVGetResultFlat::TPtr &ev, const TActorContext &ctx) {
+        Y_ABORT_UNLESS(ev->Get()->GetStatus() == NKikimrProto::OK, "Status=%d ErrorReason# %s",
+            ev->Get()->GetStatus(), ev->Get()->GetErrorReason().data());
+        LOG_NOTICE(ctx, NActorsServices::TEST, "  TEvVGetResultFlat succeded");
+        for (ui32 i = 0; i < ev->Get()->GetItemsCount(); ++i) {
+            const auto item = ev->Get()->GetItem(i);
+            const TLogoBlobID id = NVDiskFlat::FromRaw(item.BlobId);
+            const TString data = ev->Get()->GetBlobData(item).ConvertToString();
+            ExpectedSet.Check(id, static_cast<NKikimrProto::EReplyStatus>(item.Status), data);
+        }
+        --Counter;
+        if (Counter == 0) {
+            ExpectedSet.Finish();
+            AtomicIncrement(Conf->SuccessCount);
+            Conf->SignalDoneEvent();
+            Die(ctx);
+        }
+    }
+
     STRICT_STFUNC(StateFuncPut,
         HFunc(TEvBlobStorage::TEvVPutResult, Handle);
         IgnoreFunc(TEvBlobStorage::TEvVWindowChange);
@@ -80,6 +100,7 @@ private:
 
     STRICT_STFUNC(StateFuncGet,
         HFunc(TEvBlobStorage::TEvVGetResult, Handle);
+        HFunc(TEvBlobStorage::TEvVGetResultFlat, Handle);
         IgnoreFunc(TEvBlobStorage::TEvVWindowChange);
     )
 
@@ -183,6 +204,46 @@ void SendReadRequests(const TActorContext &ctx) {
     Counter = 1;
 }
 SIMPLE_TEST_END(TSimple3Put1SeqGetAll, TBasePutAllFromDataSet)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+SIMPLE_TEST_BEGIN(TSimple3Put1SeqFlatGetAll, TBasePutAllFromDataSet)
+void SendReadRequests(const TActorContext &ctx) {
+    const TVector<TDataItem> &ds = DataSetPtr->ToVector();
+
+    auto req = TEvBlobStorage::TEvVGetFlat::CreateExtremeDataQuery(VDiskInfo.VDiskID, TInstant::Max(),
+            NKikimrBlobStorage::EGetHandleClass::AsyncRead, TEvBlobStorage::TEvVGet::EFlags::None);
+    req->AddExtremeQuery(ds.at(0).Id, 0, 0);
+    req->AddExtremeQuery(ds.at(1).Id, 0, 0);
+    req->AddExtremeQuery(ds.at(2).Id, 0, 0);
+    ctx.Send(VDiskInfo.ActorID, req.release());
+
+    ExpectedSet.Put(ds.at(0).Id, NKikimrProto::OK, ds.at(0).Data);
+    ExpectedSet.Put(ds.at(1).Id, NKikimrProto::OK, ds.at(1).Data);
+    ExpectedSet.Put(ds.at(2).Id, NKikimrProto::OK, ds.at(2).Data);
+
+    Counter = 1;
+}
+SIMPLE_TEST_END(TSimple3Put1SeqFlatGetAll, TBasePutAllFromDataSet)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+SIMPLE_TEST_BEGIN(TSimple3Put1SeqFlatIndexGetAll, TBasePutAllFromDataSet)
+void SendReadRequests(const TActorContext &ctx) {
+    const TVector<TDataItem> &ds = DataSetPtr->ToVector();
+
+    auto req = TEvBlobStorage::TEvVGetFlat::CreateExtremeIndexQuery(VDiskInfo.VDiskID, TInstant::Max(),
+            NKikimrBlobStorage::EGetHandleClass::AsyncRead, TEvBlobStorage::TEvVGet::EFlags::None);
+    req->AddExtremeQuery(ds.at(0).Id.FullID(), 0, 0);
+    req->AddExtremeQuery(ds.at(1).Id.FullID(), 0, 0);
+    req->AddExtremeQuery(ds.at(2).Id.FullID(), 0, 0);
+    ctx.Send(VDiskInfo.ActorID, req.release());
+
+    ExpectedSet.Put(ds.at(0).Id.FullID(), NKikimrProto::OK, {});
+    ExpectedSet.Put(ds.at(1).Id.FullID(), NKikimrProto::OK, {});
+    ExpectedSet.Put(ds.at(2).Id.FullID(), NKikimrProto::OK, {});
+
+    Counter = 1;
+}
+SIMPLE_TEST_END(TSimple3Put1SeqFlatIndexGetAll, TBasePutAllFromDataSet)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 SIMPLE_TEST_BEGIN(TSimple3Put1SeqGet2, TBasePutAllFromDataSet)
@@ -520,4 +581,3 @@ void TRangeGetFromEmptyDB::operator ()(TConfiguration *conf) {
     conf->ActorSystem1->Register(new TRangeGetFromEmptyDBActor(conf));
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-

@@ -3,6 +3,7 @@
 #include "defs.h"
 #include <ydb/core/blobstorage/vdisk/hulldb/hull_ds_all_snap.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
+#include <ydb/core/blobstorage/vdisk/common/vdisk_flat_events.h>
 
 namespace NKikimr {
 
@@ -48,6 +49,16 @@ namespace NKikimr {
                 const TActorId &parentId,
                 TEvBlobStorage::TEvVGet::TPtr &ev,
                 std::unique_ptr<TEvBlobStorage::TEvVGetResult> result,
+                TActorId replSchedulerId);
+
+    IActor *CreateLevelIndexQueryActor(
+                std::shared_ptr<TQueryCtx> &queryCtx,
+                TReadQueryKeepChecker &&keepChecker,
+                const TActorContext &ctx,
+                THullDsSnap &&fullSnap,
+                const TActorId &parentId,
+                TEvBlobStorage::TEvVGetFlat::TPtr &ev,
+                std::unique_ptr<TEvBlobStorage::TEvVGetResultFlat> result,
                 TActorId replSchedulerId);
 
     //////////////////////////////////////////////////////////////////////////////////////

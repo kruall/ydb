@@ -196,7 +196,7 @@ namespace NKikimr {
                 if (!good) {
                     if (printOnFail)
                         Cerr << "Items: " << DiskDataItemsToString()
-                            << " OriginalQuery: " << Ctx->OrigEv->Get()->ToString() << "\n";
+                            << " OriginalQuery: " << Ctx->OrigEvString << "\n";
                     return false;
                 }
             }
