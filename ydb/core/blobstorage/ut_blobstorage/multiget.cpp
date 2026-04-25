@@ -5,10 +5,11 @@ Y_UNIT_TEST_SUITE(MultiGet) {
     struct TRangeIndexBenchmarkResult {
         TString Query;
         TDuration PutTime;
-        TDuration ReadTime;
+        TDuration Duration;
         ui32 Blobs = 0;
-        ui32 Reads = 0;
         ui32 ResponsesPerRead = 0;
+        ui64 Ops = 0;
+        ui64 Responses = 0;
     };
 
     struct TRangeIndexBenchmarkQuery {
@@ -30,7 +31,7 @@ Y_UNIT_TEST_SUITE(MultiGet) {
 
         constexpr ui64 tabletId = 1;
         constexpr ui32 blobsToSend = 2'000;
-        constexpr ui32 reads = 30;
+        const TDuration benchmarkDuration = TDuration::Seconds(60);
         const TString buffer = "A SMALL BLOB 16b";
 
         THPTimer putTimer;
@@ -83,9 +84,12 @@ Y_UNIT_TEST_SUITE(MultiGet) {
         };
 
         TVector<TRangeIndexBenchmarkResult> results;
+        const TDuration queryDuration = TDuration::MicroSeconds(benchmarkDuration.MicroSeconds() / queries.size());
+        const double queryDurationSeconds = static_cast<double>(queryDuration.MicroSeconds()) / 1'000'000;
         for (const auto& query : queries) {
             THPTimer readTimer;
-            for (ui32 i = 0; i < reads; ++i) {
+            ui64 ops = 0;
+            while (readTimer.Passed() < queryDurationSeconds) {
                 runtime->WrapInActorContext(edge, [&] {
                     SendToBSProxy(edge, groupId, new TEvBlobStorage::TEvRange(tabletId, query.From, query.To, false,
                         TInstant::Max(), true));
@@ -93,14 +97,17 @@ Y_UNIT_TEST_SUITE(MultiGet) {
                 auto res = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge, false);
                 UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::OK);
                 UNIT_ASSERT_VALUES_EQUAL(res->Get()->Responses.size(), query.ExpectedResponses);
+                ++ops;
             }
+            const TDuration duration = TDuration::Seconds(readTimer.Passed());
             results.push_back({
                 .Query = query.Name,
                 .PutTime = putTime,
-                .ReadTime = TDuration::Seconds(readTimer.Passed()),
+                .Duration = duration,
                 .Blobs = blobsToSend,
-                .Reads = reads,
                 .ResponsesPerRead = query.ExpectedResponses,
+                .Ops = ops,
+                .Responses = ops * query.ExpectedResponses,
             });
         }
 
@@ -108,16 +115,18 @@ Y_UNIT_TEST_SUITE(MultiGet) {
     }
 
     void PrintRangeIndexBenchmarkResult(TStringBuf name, const TRangeIndexBenchmarkResult& result) {
-        const ui64 responses = static_cast<ui64>(result.ResponsesPerRead) * result.Reads;
         Cerr << "RangeIndexBenchmark " << name
             << " query# " << result.Query
             << " blobs# " << result.Blobs
-            << " reads# " << result.Reads
             << " responsesPerRead# " << result.ResponsesPerRead
-            << " responses# " << responses
+            << " ops# " << result.Ops
+            << " responses# " << result.Responses
             << " putTime# " << result.PutTime
-            << " readTime# " << result.ReadTime
-            << " readUsPerResponse# " << (responses ? result.ReadTime.MicroSeconds() / responses : 0)
+            << " duration# " << result.Duration
+            << " opsPerSecond# " << (result.Duration.MicroSeconds() ?
+                result.Ops * 1'000'000 / result.Duration.MicroSeconds() : 0)
+            << " responsesPerSecond# " << (result.Duration.MicroSeconds() ?
+                result.Responses * 1'000'000 / result.Duration.MicroSeconds() : 0)
             << Endl;
     }
 
@@ -195,10 +204,10 @@ Y_UNIT_TEST_SUITE(MultiGet) {
             UNIT_ASSERT_VALUES_EQUAL(proto[i].Query, flat[i].Query);
             PrintRangeIndexBenchmarkResult("proto", proto[i]);
             PrintRangeIndexBenchmarkResult("flat", flat[i]);
-            if (flat[i].ReadTime.MicroSeconds()) {
+            if (proto[i].Ops) {
                 Cerr << "RangeIndexBenchmark query# " << proto[i].Query
-                    << " protoToFlatReadRatio# "
-                    << static_cast<double>(proto[i].ReadTime.MicroSeconds()) / flat[i].ReadTime.MicroSeconds()
+                    << " flatToProtoOpsRatio# "
+                    << static_cast<double>(flat[i].Ops) / proto[i].Ops
                     << Endl;
             }
         }
