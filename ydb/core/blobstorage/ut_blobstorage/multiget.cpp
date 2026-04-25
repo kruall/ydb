@@ -3,13 +3,22 @@
 Y_UNIT_TEST_SUITE(MultiGet) {
 
     struct TRangeIndexBenchmarkResult {
+        TString Query;
         TDuration PutTime;
         TDuration ReadTime;
         ui32 Blobs = 0;
         ui32 Reads = 0;
+        ui32 ResponsesPerRead = 0;
     };
 
-    TRangeIndexBenchmarkResult RunRangeIndexBenchmark(bool enableFlatEvents) {
+    struct TRangeIndexBenchmarkQuery {
+        TString Name;
+        TLogoBlobID From;
+        TLogoBlobID To;
+        ui32 ExpectedResponses = 0;
+    };
+
+    TVector<TRangeIndexBenchmarkResult> RunRangeIndexBenchmark(bool enableFlatEvents) {
         TEnvironmentSetup env(false, TBlobStorageGroupType::Erasure4Plus2Block);
         auto& runtime = env.Runtime;
         env.CreateBoxAndPool();
@@ -21,7 +30,7 @@ Y_UNIT_TEST_SUITE(MultiGet) {
 
         constexpr ui64 tabletId = 1;
         constexpr ui32 blobsToSend = 2'000;
-        constexpr ui32 reads = 50;
+        constexpr ui32 reads = 30;
         const TString buffer = "A SMALL BLOB 16b";
 
         THPTimer putTimer;
@@ -37,35 +46,74 @@ Y_UNIT_TEST_SUITE(MultiGet) {
         }
         const TDuration putTime = TDuration::Seconds(putTimer.Passed());
 
-        const TLogoBlobID from(tabletId, 0, 0, 0, 0, 0);
-        const TLogoBlobID to(tabletId, Max<ui32>(), Max<ui32>(), TLogoBlobID::MaxChannel, TLogoBlobID::MaxBlobSize,
-            TLogoBlobID::MaxCookie);
-
-        THPTimer readTimer;
-        for (ui32 i = 0; i < reads; ++i) {
-            runtime->WrapInActorContext(edge, [&] {
-                SendToBSProxy(edge, groupId, new TEvBlobStorage::TEvRange(tabletId, from, to, false, TInstant::Max(),
-                    true));
-            });
-            auto res = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge, false);
-            UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::OK);
-            UNIT_ASSERT_VALUES_EQUAL(res->Get()->Responses.size(), blobsToSend);
-        }
-        const TDuration readTime = TDuration::Seconds(readTimer.Passed());
-
-        return {
-            .PutTime = putTime,
-            .ReadTime = readTime,
-            .Blobs = blobsToSend,
-            .Reads = reads,
+        const TVector<TRangeIndexBenchmarkQuery> queries{
+            {
+                .Name = "full-forward",
+                .From = TLogoBlobID(tabletId, 0, 0, 0, 0, 0),
+                .To = TLogoBlobID(tabletId, Max<ui32>(), Max<ui32>(), TLogoBlobID::MaxChannel,
+                    TLogoBlobID::MaxBlobSize, TLogoBlobID::MaxCookie),
+                .ExpectedResponses = blobsToSend,
+            },
+            {
+                .Name = "full-backward",
+                .From = TLogoBlobID(tabletId, Max<ui32>(), Max<ui32>(), TLogoBlobID::MaxChannel,
+                    TLogoBlobID::MaxBlobSize, TLogoBlobID::MaxCookie),
+                .To = TLogoBlobID(tabletId, 0, 0, 0, 0, 0),
+                .ExpectedResponses = blobsToSend,
+            },
+            {
+                .Name = "small-forward",
+                .From = TLogoBlobID(tabletId, 1, 100, 0, 0, 0),
+                .To = TLogoBlobID(tabletId, 1, 199, 0, TLogoBlobID::MaxBlobSize, TLogoBlobID::MaxCookie),
+                .ExpectedResponses = 100,
+            },
+            {
+                .Name = "point",
+                .From = TLogoBlobID(tabletId, 1, 123, 0, buffer.size(), 0),
+                .To = TLogoBlobID(tabletId, 1, 123, 0, buffer.size(), 0),
+                .ExpectedResponses = 1,
+            },
+            {
+                .Name = "empty",
+                .From = TLogoBlobID(tabletId, 2, 0, 0, 0, 0),
+                .To = TLogoBlobID(tabletId, 2, Max<ui32>(), TLogoBlobID::MaxChannel, TLogoBlobID::MaxBlobSize,
+                    TLogoBlobID::MaxCookie),
+                .ExpectedResponses = 0,
+            },
         };
+
+        TVector<TRangeIndexBenchmarkResult> results;
+        for (const auto& query : queries) {
+            THPTimer readTimer;
+            for (ui32 i = 0; i < reads; ++i) {
+                runtime->WrapInActorContext(edge, [&] {
+                    SendToBSProxy(edge, groupId, new TEvBlobStorage::TEvRange(tabletId, query.From, query.To, false,
+                        TInstant::Max(), true));
+                });
+                auto res = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvRangeResult>(edge, false);
+                UNIT_ASSERT_VALUES_EQUAL(res->Get()->Status, NKikimrProto::OK);
+                UNIT_ASSERT_VALUES_EQUAL(res->Get()->Responses.size(), query.ExpectedResponses);
+            }
+            results.push_back({
+                .Query = query.Name,
+                .PutTime = putTime,
+                .ReadTime = TDuration::Seconds(readTimer.Passed()),
+                .Blobs = blobsToSend,
+                .Reads = reads,
+                .ResponsesPerRead = query.ExpectedResponses,
+            });
+        }
+
+        return results;
     }
 
     void PrintRangeIndexBenchmarkResult(TStringBuf name, const TRangeIndexBenchmarkResult& result) {
-        const ui64 responses = static_cast<ui64>(result.Blobs) * result.Reads;
+        const ui64 responses = static_cast<ui64>(result.ResponsesPerRead) * result.Reads;
         Cerr << "RangeIndexBenchmark " << name
+            << " query# " << result.Query
             << " blobs# " << result.Blobs
             << " reads# " << result.Reads
+            << " responsesPerRead# " << result.ResponsesPerRead
             << " responses# " << responses
             << " putTime# " << result.PutTime
             << " readTime# " << result.ReadTime
@@ -142,12 +190,17 @@ Y_UNIT_TEST_SUITE(MultiGet) {
         const auto proto = RunRangeIndexBenchmark(false);
         const auto flat = RunRangeIndexBenchmark(true);
 
-        PrintRangeIndexBenchmarkResult("proto", proto);
-        PrintRangeIndexBenchmarkResult("flat", flat);
-        if (flat.ReadTime.MicroSeconds()) {
-            Cerr << "RangeIndexBenchmark protoToFlatReadRatio# "
-                << static_cast<double>(proto.ReadTime.MicroSeconds()) / flat.ReadTime.MicroSeconds()
-                << Endl;
+        UNIT_ASSERT_VALUES_EQUAL(proto.size(), flat.size());
+        for (ui32 i = 0; i < proto.size(); ++i) {
+            UNIT_ASSERT_VALUES_EQUAL(proto[i].Query, flat[i].Query);
+            PrintRangeIndexBenchmarkResult("proto", proto[i]);
+            PrintRangeIndexBenchmarkResult("flat", flat[i]);
+            if (flat[i].ReadTime.MicroSeconds()) {
+                Cerr << "RangeIndexBenchmark query# " << proto[i].Query
+                    << " protoToFlatReadRatio# "
+                    << static_cast<double>(proto[i].ReadTime.MicroSeconds()) / flat[i].ReadTime.MicroSeconds()
+                    << Endl;
+            }
         }
     }
 
