@@ -38,11 +38,33 @@ TString ParseHostPort(const TString& endpoint) {
         return TStringBuilder() << "localhost:" << DefaultKvPort;
     }
 
+    // Bracketed IPv6 literal: [addr] or [addr]:port
+    // gRPC C++ does not accept RFC-2732 brackets — it URL-encodes them.
+    // The correct gRPC format for IPv6 is "ipv6:addr:port" (no brackets).
+    if (!hostPort.empty() && hostPort[0] == '[') {
+        const size_t closeBracket = hostPort.find(']');
+        if (closeBracket != TString::npos) {
+            TString addr = hostPort.substr(1, closeBracket - 1); // strip brackets
+            TString portSuffix;
+            if (closeBracket + 1 < hostPort.size() && hostPort[closeBracket + 1] == ':') {
+                portSuffix = hostPort.substr(closeBracket + 1); // ":port"
+            } else {
+                portSuffix = TStringBuilder() << ":" << DefaultKvPort;
+            }
+            return TStringBuilder() << "ipv6:" << addr << portSuffix;
+        }
+    }
+
+    // Plain hostname or IPv4: look for ':' to detect an existing port.
     if (hostPort.find(':') == TString::npos) {
         hostPort += TStringBuilder() << ":" << DefaultKvPort;
     }
 
     return hostPort;
+}
+
+bool ParseUseTls(const TString& endpoint) {
+    return endpoint.StartsWith("grpcs://");
 }
 
 TString GeneratePatternData(ui32 size) {

@@ -65,6 +65,6 @@ public:
         TReadCallback done) = 0;
 };
 
-std::unique_ptr<IKeyValueClient> MakeKeyValueClient(const TString& hostPort, const TOptions& options);
+std::unique_ptr<IKeyValueClient> MakeKeyValueClient(const TString& hostPort, bool useTls, const TOptions& options);
 
 } // namespace NKvVolumeStress

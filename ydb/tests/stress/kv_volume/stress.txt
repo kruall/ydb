@@ -4,8 +4,8 @@ partition_mode: OnePartition
 
 volume_config {
     path: "kv_volume"
-    partition_count: 2048
-    channel_media: ["ssd", "ssd", "ssd"]
+    partition_count: 1
+    channel_media: ["ssd", "ssd", "s3"]
 }
 
 initial_data {
@@ -18,7 +18,7 @@ initial_data {
 
 actions {
     name: "read"
-    period_us: 1
+    period_us: 100000
 
     action_data_mode {
         worker {}
@@ -35,7 +35,7 @@ actions {
 
 actions {
     name: "write"
-    period_us: 1
+    period_us: 100000
 
     action_command {
         write {

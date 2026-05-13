@@ -35,6 +35,7 @@ public:
         const TOptions& options,
         const NKikimrKeyValue::KeyValueVolumeStressLoad& config,
         const TString& hostPort,
+        bool useTls,
         const TString& volumePath,
         TRunStats& stats,
         TInitialLoadProgress* initialLoadProgress = nullptr,

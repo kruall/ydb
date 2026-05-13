@@ -35,6 +35,7 @@ TWorker::TWorker(
     const TOptions& options,
     const NKikimrKeyValue::KeyValueVolumeStressLoad& config,
     const TString& hostPort,
+    bool useTls,
     const TString& volumePath,
     TRunStats& stats,
     TInitialLoadProgress* initialLoadProgress,
@@ -48,7 +49,7 @@ TWorker::TWorker(
     , InitialLoadProgress_(initialLoadProgress)
     , WorkerLoadTracker_(workerLoadTracker)
     , StopSignal_(stopSignal)
-    , Client_(MakeKeyValueClient(hostPort, options))
+    , Client_(MakeKeyValueClient(hostPort, useTls, options))
 {
     const ui32 actionsCount = Config_.actions_size();
     Actions_.reserve(actionsCount);

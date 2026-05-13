@@ -8,6 +8,7 @@
 
 #include <grpc/impl/grpc_types.h>
 #include <grpcpp/create_channel.h>
+#include <grpcpp/security/credentials.h>
 
 #include <chrono>
 #include <stdexcept>
@@ -122,12 +123,15 @@ void CallWithRetryAsync(
 
 } // namespace
 
-TKeyValueClientV2::TKeyValueClientV2(const TString& hostPort, std::shared_ptr<TGrpcAsyncExecutor> executor)
+TKeyValueClientV2::TKeyValueClientV2(const TString& hostPort, bool useTls, std::shared_ptr<TGrpcAsyncExecutor> executor)
     : Executor_(std::move(executor))
-    , Channel_([&hostPort] {
+    , Channel_([&hostPort, useTls] {
         grpc::ChannelArguments args;
         args.SetInt(GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1);
-        return grpc::CreateCustomChannel(hostPort, grpc::InsecureChannelCredentials(), args);
+        auto credentials = useTls
+            ? grpc::SslCredentials(grpc::SslCredentialsOptions())
+            : grpc::InsecureChannelCredentials();
+        return grpc::CreateCustomChannel(hostPort, credentials, args);
     }())
     , StubV1_(Ydb::KeyValue::V1::KeyValueService::NewStub(Channel_))
     , StubV2_(Ydb::KeyValue::V2::KeyValueService::NewStub(Channel_))

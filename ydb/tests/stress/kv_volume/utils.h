@@ -10,6 +10,7 @@ namespace NKvVolumeStress {
 std::mt19937_64& RandomEngine();
 TString MakeVolumePath(const TString& database, const TString& path);
 TString ParseHostPort(const TString& endpoint);
+bool ParseUseTls(const TString& endpoint);
 TString GeneratePatternData(ui32 size);
 
 } // namespace NKvVolumeStress
