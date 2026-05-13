@@ -414,6 +414,7 @@ TOptions ParseOptions(int argc, char** argv) {
 int RunWorkload(const TOptions& options, const NKikimrKeyValue::KeyValueVolumeStressLoad& config) {
     const TString hostPort = ParseHostPort(options.Endpoint);
     const bool useTls = ParseUseTls(options.Endpoint);
+    const TString database = options.Database;
     const TString volumePath = MakeVolumePath(options.Database, config.volume_config().path());
 
     TVector<TString> actionNames;
@@ -430,7 +431,7 @@ int RunWorkload(const TOptions& options, const NKikimrKeyValue::KeyValueVolumeSt
     bool interrupted = false;
 
     {
-        std::unique_ptr<IKeyValueClient> setupClient = MakeKeyValueClient(hostPort, useTls, options);
+        std::unique_ptr<IKeyValueClient> setupClient = MakeKeyValueClient(hostPort, useTls, database, options);
         TString error;
         TVector<TString> channels;
         channels.reserve(config.volume_config().channel_media_size());
@@ -455,6 +456,7 @@ int RunWorkload(const TOptions& options, const NKikimrKeyValue::KeyValueVolumeSt
                 config,
                 hostPort,
                 useTls,
+                database,
                 volumePath,
                 stats,
                 &initialLoadProgress,
@@ -507,7 +509,7 @@ int RunWorkload(const TOptions& options, const NKikimrKeyValue::KeyValueVolumeSt
     }
 
     {
-        std::unique_ptr<IKeyValueClient> setupClient = MakeKeyValueClient(hostPort, useTls, options);
+        std::unique_ptr<IKeyValueClient> setupClient = MakeKeyValueClient(hostPort, useTls, database, options);
         TString error;
         if (!setupClient->DropVolume(volumePath, &error)) {
             Cerr << "DropVolume failed: " << error << Endl;

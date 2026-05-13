@@ -16,7 +16,7 @@ namespace NKvVolumeStress {
 
 class TKeyValueClientV2 final : public IKeyValueClient {
 public:
-    TKeyValueClientV2(const TString& hostPort, bool useTls, std::shared_ptr<TGrpcAsyncExecutor> executor);
+    TKeyValueClientV2(const TString& hostPort, bool useTls, const TString& database, std::shared_ptr<TGrpcAsyncExecutor> executor);
 
     bool CreateVolume(const TString& path, ui32 partitionCount, const TVector<TString>& channels, TString* error) override;
     bool DropVolume(const TString& path, TString* error) override;
@@ -35,6 +35,7 @@ private:
 
 private:
     std::shared_ptr<TGrpcAsyncExecutor> Executor_;
+    TString Database_;
     std::shared_ptr<grpc::Channel> Channel_;
     std::unique_ptr<Ydb::KeyValue::V1::KeyValueService::Stub> StubV1_;
     std::unique_ptr<Ydb::KeyValue::V2::KeyValueService::Stub> StubV2_;

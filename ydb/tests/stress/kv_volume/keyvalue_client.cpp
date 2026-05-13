@@ -51,15 +51,15 @@ std::shared_ptr<TGrpcAsyncExecutor> GetSharedGrpcExecutor(ui32 configuredThreads
 
 } // namespace
 
-std::unique_ptr<IKeyValueClient> MakeKeyValueClient(const TString& hostPort, bool useTls, const TOptions& options) {
+std::unique_ptr<IKeyValueClient> MakeKeyValueClient(const TString& hostPort, bool useTls, const TString& database, const TOptions& options) {
     auto executor = GetSharedGrpcExecutor(options.GrpcCqThreads);
 
     if (options.Version == "v1") {
-        return std::make_unique<TKeyValueClientV1>(hostPort, useTls, std::move(executor));
+        return std::make_unique<TKeyValueClientV1>(hostPort, useTls, database, std::move(executor));
     }
 
     if (options.Version == "v2") {
-        return std::make_unique<TKeyValueClientV2>(hostPort, useTls, std::move(executor));
+        return std::make_unique<TKeyValueClientV2>(hostPort, useTls, database, std::move(executor));
     }
 
     throw std::runtime_error(TStringBuilder() << "unsupported --version: " << options.Version);

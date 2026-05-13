@@ -24,6 +24,7 @@ constexpr ui32 GrpcRetryCount = 10;
 constexpr auto GrpcRetrySleep = 100ms;
 constexpr auto GrpcDeadline = 10s;
 constexpr const char* YdbAuthHeader = "x-ydb-auth-ticket";
+constexpr const char* YdbDatabaseHeader = "x-ydb-database";
 
 TString StatusToString(Ydb::StatusIds::StatusCode status) {
     return Ydb::StatusIds::StatusCode_Name(status);
@@ -31,17 +32,23 @@ TString StatusToString(Ydb::StatusIds::StatusCode status) {
 
 const TString& AuthTicket() {
     static const TString token = [] {
-        const TString fromEnv = GetEnv("YDB_AUTH_TICKET", "");
+        TString fromEnv = GetEnv("YDB_AUTH_TICKET", "");
+        if (fromEnv.empty()) {
+            fromEnv = GetEnv("YDB_TOKEN", "");
+        }
         return fromEnv;
     }();
 
     return token;
 }
 
-void AdjustCtx(grpc::ClientContext& ctx) {
+void AdjustCtx(grpc::ClientContext& ctx, const TString& database) {
     auto token = AuthTicket();
     if (token.size()) {
         ctx.AddMetadata(YdbAuthHeader, token);
+    }
+    if (!database.empty()) {
+        ctx.AddMetadata(YdbDatabaseHeader, database);
     }
 }
 
@@ -58,6 +65,7 @@ TString BuildGrpcError(bool cqOk, const grpc::Status& grpcStatus) {
 template <typename TResponse, typename TStartCall, typename TGetOperationStatus, typename TDone>
 struct TAsyncRetryState {
     std::shared_ptr<TGrpcAsyncExecutor> Executor;
+    TString Database;
     TStartCall StartCall;
     TGetOperationStatus GetOperationStatus;
     TDone Done;
@@ -67,7 +75,7 @@ struct TAsyncRetryState {
 template <typename TResponse, typename TStartCall, typename TGetOperationStatus, typename TDone>
 void RunAsyncRetry(const std::shared_ptr<TAsyncRetryState<TResponse, TStartCall, TGetOperationStatus, TDone>>& state) {
     auto context = std::make_unique<grpc::ClientContext>();
-    AdjustCtx(*context);
+    AdjustCtx(*context, state->Database);
     context->set_deadline(std::chrono::system_clock::now() + GrpcDeadline);
 
     state->Executor->template UnaryAsync<TResponse>(
@@ -109,12 +117,14 @@ void RunAsyncRetry(const std::shared_ptr<TAsyncRetryState<TResponse, TStartCall,
 template <typename TResponse, typename TStartCall, typename TGetOperationStatus, typename TDone>
 void CallWithRetryAsync(
     const std::shared_ptr<TGrpcAsyncExecutor>& executor,
+    const TString& database,
     TStartCall startCall,
     TGetOperationStatus getOperationStatus,
     TDone done)
 {
     auto state = std::make_shared<TAsyncRetryState<TResponse, TStartCall, TGetOperationStatus, TDone>>(TAsyncRetryState<TResponse, TStartCall, TGetOperationStatus, TDone>{
         .Executor = executor,
+        .Database = database,
         .StartCall = std::move(startCall),
         .GetOperationStatus = std::move(getOperationStatus),
         .Done = std::move(done),
@@ -125,8 +135,9 @@ void CallWithRetryAsync(
 
 } // namespace
 
-TKeyValueClientV1::TKeyValueClientV1(const TString& hostPort, bool useTls, std::shared_ptr<TGrpcAsyncExecutor> executor)
+TKeyValueClientV1::TKeyValueClientV1(const TString& hostPort, bool useTls, const TString& database, std::shared_ptr<TGrpcAsyncExecutor> executor)
     : Executor_(std::move(executor))
+    , Database_(database)
     , Channel_([&hostPort, useTls] {
         grpc::ChannelArguments args;
         args.SetInt(GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1);
@@ -351,6 +362,7 @@ void TKeyValueClientV1::WriteAsync(
 
     CallWithRetryAsync<Ydb::KeyValue::ExecuteTransactionResponse>(
         Executor_,
+        Database_,
         [this, request](grpc::ClientContext* asyncCtx, grpc::CompletionQueue* completionQueue) {
             return Stub_->AsyncExecuteTransaction(asyncCtx, *request, completionQueue);
         },
@@ -390,6 +402,7 @@ void TKeyValueClientV1::DeleteKeyAsync(
 
     CallWithRetryAsync<Ydb::KeyValue::ExecuteTransactionResponse>(
         Executor_,
+        Database_,
         [this, request](grpc::ClientContext* asyncCtx, grpc::CompletionQueue* completionQueue) {
             return Stub_->AsyncExecuteTransaction(asyncCtx, *request, completionQueue);
         },
@@ -430,6 +443,7 @@ void TKeyValueClientV1::ReadAsync(
 
     CallWithRetryAsync<Ydb::KeyValue::ReadResponse>(
         Executor_,
+        Database_,
         [this, request](grpc::ClientContext* asyncCtx, grpc::CompletionQueue* completionQueue) {
             return Stub_->AsyncRead(asyncCtx, *request, completionQueue);
         },
@@ -467,7 +481,7 @@ bool TKeyValueClientV1::CallWithRetry(
 {
     for (ui32 attempt = 1; attempt <= GrpcRetryCount; ++attempt) {
         grpc::ClientContext context;
-        AdjustCtx(context);
+        AdjustCtx(context, Database_);
         context.set_deadline(std::chrono::system_clock::now() + GrpcDeadline);
 
         grpc::Status grpcStatus = call(&context);
