@@ -128,7 +128,6 @@ class _TextInputModal(ModalScreen[Optional[str]]):
     CSS = theme.SCREEN_CSS_MODAL
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
-        Binding("ctrl+s", "submit", "Apply", priority=True),
     ]
 
     def __init__(self, title: str, value: str, help_text: str = "", placeholder: str = ""):
@@ -139,12 +138,13 @@ class _TextInputModal(ModalScreen[Optional[str]]):
         self._placeholder = placeholder
 
     def compose(self):
-        with Container(id="dialog"):
-            yield Static(self._title, id="title")
-            if self._help:
-                yield Static(self._help, classes="hint")
-            yield Input(value=self._initial, placeholder=self._placeholder, id="value")
-            yield Static(theme.format_footer(theme.FOOTER_MODAL_INPUT), classes="hint")
+        with theme.modal_root():
+            with Container(id="dialog"):
+                yield Static(self._title, id="title")
+                if self._help:
+                    yield Static(self._help, classes="hint")
+                yield Input(value=self._initial, placeholder=self._placeholder, id="value")
+                yield Static(theme.format_footer(theme.FOOTER_MODAL_INPUT), classes="hint")
 
     def on_mount(self):
         self.query_one("#value", Input).focus()
@@ -175,17 +175,18 @@ class _ChoiceModal(ModalScreen[Optional[str]]):
         self._allow_clear = allow_clear
 
     def compose(self):
-        with Container(id="dialog"):
-            yield Static(self._title, id="title")
-            if self._help:
-                yield Static(self._help, classes="hint")
-            items = []
-            if self._allow_clear:
-                items.append(ListItem(Label("(unset)"), id="choice-_clear"))
-            for index, choice in enumerate(self._choices):
-                items.append(ListItem(Label(choice), id=f"choice-{index}"))
-            yield _ModalListView(*items, id="choices")
-            yield Static(theme.format_footer(theme.FOOTER_MODAL_CHOICE), classes="hint")
+        with theme.modal_root():
+            with Container(id="dialog"):
+                yield Static(self._title, id="title")
+                if self._help:
+                    yield Static(self._help, classes="hint")
+                items = []
+                if self._allow_clear:
+                    items.append(ListItem(Label("(unset)"), id="choice-_clear"))
+                for index, choice in enumerate(self._choices):
+                    items.append(ListItem(Label(choice), id=f"choice-{index}"))
+                yield _ModalListView(*items, id="choices")
+                yield Static(theme.format_footer(theme.FOOTER_MODAL_CHOICE), classes="hint")
 
     def on_mount(self):
         list_view = self.query_one("#choices", ListView)
@@ -228,12 +229,13 @@ class _DeployFlagsModal(ModalScreen[Optional[List[str]]]):
         self._flags = list(scheme.common.deploy_flags)
 
     def compose(self):
-        with Container(id="dialog"):
-            yield Static(self._title, id="title")
-            if self._help:
-                yield Static(self._help, classes="hint")
-            yield _ModalListView(id="flags")
-            yield Static(theme.format_footer(theme.FOOTER_MODAL_MULTI), classes="hint")
+        with theme.modal_root():
+            with Container(id="dialog"):
+                yield Static(self._title, id="title")
+                if self._help:
+                    yield Static(self._help, classes="hint")
+                yield _ModalListView(id="flags")
+                yield Static(theme.format_footer(theme.FOOTER_MODAL_MULTI), classes="hint")
 
     def on_mount(self):
         self._refresh()

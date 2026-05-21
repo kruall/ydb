@@ -13,7 +13,7 @@ from ydb.tools.mnc.lib.exceptions import CliError
 from ydb.tools.mnc.cli import arg_metadata, command_options, parser_factory
 from ydb.tools.mnc.cli.tui import theme
 from ydb.tools.mnc.cli.tui.app import TuiApp
-from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp, _BackListItem
+from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp, _BackListItem, _ConfirmQuitModal
 from ydb.tools.mnc.cli.tui.common import ConfigCandidate, config_preview
 from ydb.tools.mnc.cli.tui.config_picker import (
     COMPAT_BAD,
@@ -29,8 +29,10 @@ from ydb.tools.mnc.cli.tui.launcher import (
 )
 from ydb.tools.mnc.cli.tui.options_form import (
     OptionsFormApp,
+    _ChoiceModal,
     _DeployFlagsApplyRow,
     _DeployFlagsModal,
+    _TextInputModal,
     collect_missing_required,
     format_row,
     is_value_changed,
@@ -577,6 +579,23 @@ class ThemeHelpersTest(unittest.TestCase):
         self.assertEqual(OptionsFormApp.CSS, theme.SCREEN_CSS_FORM)
         self.assertEqual(RuntimeProgressApp.CSS, theme.SCREEN_CSS_RUNTIME)
 
+    def test_modal_css_centers_dialogs_through_shared_root(self):
+        self.assertIn("#modal-root", theme.SCREEN_CSS_MODAL)
+        self.assertIn("align: center middle", theme.SCREEN_CSS_MODAL)
+        self.assertIn("border: round $primary", theme.SCREEN_CSS_MODAL)
+        self.assertNotIn("Screen {\n    align: center middle", theme.SCREEN_CSS_MODAL)
+
+    def test_modals_use_shared_centering_root(self):
+        compose_methods = [
+            _ConfirmQuitModal.compose,
+            _TextInputModal.compose,
+            _ChoiceModal.compose,
+            _DeployFlagsModal.compose,
+        ]
+
+        for compose in compose_methods:
+            self.assertIn("modal_root", compose.__code__.co_names)
+
 
 class WizardPreviewTest(unittest.TestCase):
     def test_wizard_step_label_default_total(self):
@@ -681,6 +700,11 @@ class OptionsFormHelpersTest(unittest.TestCase):
 
         self.assertNotIn("Ctrl+S", footer)
         self.assertIn("Toggle/Apply", footer)
+
+    def test_text_input_modal_has_no_ctrl_s_apply_shortcut(self):
+        key_bindings = [binding.key for binding in _TextInputModal.BINDINGS]
+
+        self.assertNotIn("ctrl+s", key_bindings)
 
     def test_deploy_flags_modal_has_explicit_apply_row(self):
         modal = _DeployFlagsModal("--deploy-flags", [])

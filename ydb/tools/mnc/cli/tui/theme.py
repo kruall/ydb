@@ -11,6 +11,7 @@ all MNC TUI screens. It exposes:
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from textual.binding import Binding
+from textual.containers import Container
 
 
 # -- CSS fragments --------------------------------------------------------
@@ -59,26 +60,29 @@ DETAILS_CSS = """
 """
 
 MODAL_CSS = """
-Screen {
-    align: center middle;
+ModalScreen {
+    layout: vertical;
+    overflow: hidden;
     background: $background 60%;
 }
-ModalScreen {
+#modal-root {
+    width: 1fr;
+    height: 1fr;
     align: center middle;
-    background: $background 60%;
+    background: transparent;
 }
 #dialog {
-    width: 72;
+    width: 64;
     max-width: 80%;
     height: auto;
-    max-height: 80%;
+    max-height: 75%;
     padding: 1 2;
-    border: round $accent;
+    border: round $primary;
     background: $surface;
 }
-#dialog ListView { height: auto; max-height: 20; min-height: 5; background: transparent; }
-#dialog #title { text-style: bold; color: $accent; padding-bottom: 1; }
-Input { background: transparent; border: solid $primary; }
+#dialog ListView { height: auto; max-height: 18; min-height: 5; background: transparent; }
+#dialog #title { text-style: bold; color: $primary; padding-bottom: 1; }
+#dialog Input { background: transparent; border: solid $primary; }
 """
 
 
@@ -126,6 +130,14 @@ SCREEN_CSS_MODAL = screen_css(
     LIST_CSS,
     DETAILS_CSS,
 )
+
+
+# -- Layout helpers --------------------------------------------------------
+
+
+def modal_root() -> Container:
+    """Return the full-screen wrapper used to center every modal dialog."""
+    return Container(id="modal-root")
 
 
 # -- Header/footer/status helpers ----------------------------------------

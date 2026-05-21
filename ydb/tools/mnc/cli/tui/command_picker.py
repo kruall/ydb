@@ -24,10 +24,11 @@ class _ConfirmQuitModal(ModalScreen[bool]):
         self._message = message
 
     def compose(self):
-        with Container(id="dialog"):
-            yield Static("Confirm quit", id="title")
-            yield Static(self._message)
-            yield Static("[bold]y[/bold]/Enter: Yes    [bold]n[/bold]/Esc: No", classes="hint", markup=True)
+        with theme.modal_root():
+            with Container(id="dialog"):
+                yield Static("Confirm quit", id="title")
+                yield Static(self._message)
+                yield Static("[bold]y[/bold]/Enter: Yes    [bold]n[/bold]/Esc: No", classes="hint", markup=True)
 
     def action_cancel(self):
         self.dismiss(False)
