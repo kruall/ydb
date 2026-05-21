@@ -1,30 +1,25 @@
 import asyncio
 
 from textual.app import App
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
+from ydb.tools.mnc.cli.tui import theme
 from ydb.tools.mnc.lib import output, progress
 from ydb.tools.mnc.lib.exceptions import CliError, ConfigError
 from ydb.tools.mnc.lib.progress_live import LiveBackend
 
 
 class RuntimeProgressApp(App):
-    CSS = """
-    Screen { layout: vertical; background: transparent; }
-    #title { height: 3; padding: 1 2; text-style: bold; color: $accent; }
-    #body { layout: horizontal; height: 1fr; padding: 0 1 1 1; }
-    #left { width: 2fr; height: 1fr; border: solid $primary; }
-    #right { width: 3fr; height: 1fr; padding: 1 2; border: solid $primary; margin-left: 1; }
-    #steps { height: 1fr; }
-    #details { height: auto; margin-bottom: 1; }
-    #logs { height: 1fr; }
-    """
+    CSS = theme.SCREEN_CSS_RUNTIME
     BINDINGS = [
-        ("up,k", "cursor_up", "Up"),
-        ("down,j", "cursor_down", "Down"),
-        ("enter,space", "toggle_selected", "Collapse"),
+        Binding("up,k", "cursor_up", "Up", show=False),
+        Binding("down,j", "cursor_down", "Down", show=False),
+        Binding("enter,space,l", "toggle_selected", "Toggle", show=False),
+        Binding("ctrl+c", "interrupt", "Interrupt", priority=True),
+        Binding("q,escape", "close_finished", "Close", show=False),
     ]
 
     def __init__(self, backend, action, progress_context, result_from_exception, refresh_per_second: int):
@@ -35,15 +30,20 @@ class RuntimeProgressApp(App):
         self.result_from_exception = result_from_exception
         self.refresh_per_second = refresh_per_second
         self.error = None
+        self._finished = False
+        self._action_task = None
+        self._interrupt_requested = False
 
     def compose(self):
-        yield Static("Run command", id="title")
+        yield Static(theme.format_header("Running command"), id="header")
         with Horizontal(id="body"):
             with Vertical(id="left"):
                 yield Static(id="steps")
             with Vertical(id="right"):
-                yield Static(id="details")
+                yield Static(id="node-details")
                 yield Static(id="logs")
+        yield Static("", id="status", classes="status-info")
+        yield Static(theme.format_footer(theme.FOOTER_RUNTIME_RUNNING), id="footer")
 
     def on_mount(self):
         self._refresh()
@@ -62,23 +62,67 @@ class RuntimeProgressApp(App):
         self.backend.toggle_selected()
         self._refresh()
 
+    def action_interrupt(self):
+        if self._finished:
+            return
+        if self._action_task is not None and not self._action_task.done():
+            self._interrupt_requested = True
+            self._action_task.cancel()
+            self._set_status("Interrupting...", level="warning")
+
+    def action_close_finished(self):
+        if self._finished:
+            self.exit(self.backend.result)
+
     async def _run_action(self):
         try:
             result = await self.action(self.progress_context)
             self.backend.result = result
         except asyncio.CancelledError:
+            if self._interrupt_requested:
+                self.backend.result = progress.TaskResult(
+                    level=progress.TaskResultLevel.ERROR,
+                    step_title="Command",
+                    message="Interrupted by user",
+                )
+                self._mark_finished()
+                return
             return
         except Exception as exc:
             self.error = exc
             self.backend.result = self.result_from_exception(exc)
+        self._mark_finished()
+
+    def _mark_finished(self):
+        self._finished = True
         self._refresh()
-        self.exit(self.backend.result)
+        try:
+            self.query_one("#footer", Static).update(
+                theme.format_footer(theme.FOOTER_RUNTIME_FINISHED)
+            )
+        except NoMatches:
+            pass
+        result = self.backend.result
+        if isinstance(result, progress.TaskResult) and result.level == progress.TaskResultLevel.ERROR:
+            self._set_status("Command failed. Press q or Enter to close.", level="error")
+        elif self.error is not None:
+            self._set_status("Command failed. Press q or Enter to close.", level="error")
+        else:
+            self.exit(self.backend.result)
 
     def _refresh(self):
         try:
             self.query_one("#steps", Static).update(self.backend.render_tree_body())
-            self.query_one("#details", Static).update(self.backend.render_details_body())
+            self.query_one("#node-details", Static).update(self.backend.render_details_body())
             self.query_one("#logs", Static).update(self.backend.render_logs_body())
+        except NoMatches:
+            return
+
+    def _set_status(self, message: str, level: str = "info"):
+        try:
+            widget = self.query_one("#status", Static)
+            widget.update(theme.status_line(message, level=level))
+            widget.set_classes(f"status-{level}")
         except NoMatches:
             return
 

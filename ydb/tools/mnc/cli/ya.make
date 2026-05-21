@@ -16,6 +16,7 @@ PY3_PROGRAM(mnc)
         tui/config_picker.py
         tui/launcher.py
         tui/options_form.py
+        tui/theme.py
 
         commands/__init__.py
         commands/install.py

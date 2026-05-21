@@ -68,6 +68,73 @@ def command_help_text(command: CommandMeta) -> str:
     return stream.getvalue().strip()
 
 
+def command_summary_text(command: CommandMeta) -> str:
+    """Render a structured, TUI-friendly summary of a command.
+
+    Includes path, description, arguments, choices, child commands, and
+    options. Uses Rich markup tags (no Textual CSS variables).
+    """
+    lines = []
+    path_text = " ".join(command.path) if command.path else "mnc"
+    lines.append(f"[bold cyan]{path_text}[/bold cyan]")
+
+    description = command.description or command.help
+    if description:
+        lines.append("")
+        lines.append(description.strip())
+    else:
+        lines.append("")
+        lines.append("[dim](no description)[/dim]")
+
+    if command.arguments:
+        lines.append("")
+        lines.append("[bold]Arguments[/bold]")
+        for argument in command.arguments:
+            marker = "[red]*[/red] " if argument.required else "  "
+            help_text = (argument.help or "").strip()
+            choices = ""
+            if argument.choices:
+                choices = f"  [dim]choices: {', '.join(map(str, argument.choices))}[/dim]"
+            lines.append(f"{marker}[bold]{argument.name}[/bold]{choices}")
+            if help_text:
+                lines.append(f"    [dim]{help_text}[/dim]")
+
+    required_options = [option for option in command.options if option.required]
+    optional_options = [
+        option for option in command.options
+        if not option.required and option.group not in ("common", "Common arguments")
+    ]
+    if required_options:
+        lines.append("")
+        lines.append("[bold]Required options[/bold]")
+        for option in required_options:
+            aliases = ", ".join(option.aliases)
+            lines.append(f"  [bold]{aliases}[/bold]")
+            if option.help:
+                lines.append(f"    [dim]{option.help.strip()}[/dim]")
+    if optional_options:
+        lines.append("")
+        lines.append("[bold]Options[/bold]")
+        for option in optional_options:
+            aliases = ", ".join(option.aliases)
+            default = ""
+            if option.default not in (None, "", [], False):
+                default = f"  [dim](default: {option.default})[/dim]"
+            lines.append(f"  {aliases}{default}")
+            if option.help:
+                lines.append(f"    [dim]{option.help.strip()}[/dim]")
+
+    if command.children:
+        lines.append("")
+        lines.append("[bold]Subcommands[/bold]")
+        for child in command.children:
+            help_text = (child.help or "").strip()
+            suffix = f"  [dim]{help_text}[/dim]" if help_text else ""
+            lines.append(f"  [bold]{child.name}[/bold]{suffix}")
+
+    return "\n".join(lines)
+
+
 def _command_metadata_from_parser(parser, parent_path: List[str]) -> CommandMeta:
     path = parent_path + ([] if parser._parent is None else [parser.metainfo.name])
     command = CommandMeta(

@@ -53,16 +53,32 @@ def discover_config_candidates() -> List[ConfigCandidate]:
 
 def config_preview(candidate: ConfigCandidate, command_scheme=None) -> Text:
     preview = Text()
-    preview.append(candidate.name + "\n")
-    preview.append(candidate.path + "\n\n")
+    preview.append(candidate.name, style="bold")
+    preview.append("\n")
+    preview.append(candidate.path, style="dim")
+    preview.append("\n\n")
+
+    errors = config_validation_errors(candidate, command_scheme)
+    if command_scheme is not None:
+        if errors:
+            preview.append("Status: ", style="bold")
+            preview.append("incompatible\n", style="bold red")
+            preview.append("Validation errors:\n", style="bold red")
+            preview.append("\n".join(f"- {error}" for error in errors), style="red")
+            preview.append("\n\n")
+        else:
+            preview.append("Status: ", style="bold")
+            preview.append("compatible\n\n", style="green")
+
+    preview.append("Contents:\n", style="bold")
     try:
         with open(candidate.path) as file:
             content = file.read()
     except Exception as error:
         content = f"Failed to read config: {error}"
     preview.append(content)
-    errors = config_validation_errors(candidate, command_scheme)
-    if errors:
+
+    if errors and command_scheme is None:
         preview.append("\n\n")
         preview.append("Config is not compatible with selected command:\n", style="bold red")
         preview.append("\n".join(f"- {error}" for error in errors), style="red")

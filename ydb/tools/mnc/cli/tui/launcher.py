@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from ydb.tools.mnc.cli import arg_metadata, command_options
-from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp
+from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp, command_path_text
 from ydb.tools.mnc.cli.tui.common import (
     COMMON_OPTION_GROUP,
     SKIPPED_OPTION_DESTS,
@@ -18,11 +18,26 @@ from ydb.tools.mnc.cli.tui.config_picker import ConfigPickerApp
 from ydb.tools.mnc.cli.tui.options_form import OptionsFormApp
 
 
+WIZARD_STEPS_TOTAL = 4
+
+
 @dataclass
 class LauncherResult:
     args: Any = None
     argv: Optional[List[str]] = None
     cancelled: bool = False
+
+
+def wizard_step_label(step: int, title: str, total: int = WIZARD_STEPS_TOTAL) -> str:
+    """Format a wizard step label like ``mnc tui · 1/4 · Select command``."""
+    return f"mnc tui · {step}/{total} · {title}"
+
+
+def argv_preview(argv: List[str]) -> str:
+    """Render an argv list as a shell-quoted command preview."""
+    if not argv:
+        return ""
+    return "mnc " + " ".join(shlex.quote(token) for token in argv)
 
 
 def should_route_to_launcher(args, expected_config_by_verb, prefer_launcher_by_verb=None) -> bool:
@@ -54,7 +69,7 @@ class TuiLauncher:
 
         command_scheme = self.expected_config_by_verb.get(command.path[0])
         if command_scheme:
-            config_arg = await self._select_config(initial_args, command_scheme)
+            config_arg = await self._select_config(initial_args, command_scheme, command)
             if config_arg is None:
                 return LauncherResult(cancelled=True)
             argv.extend(config_arg)
@@ -63,16 +78,20 @@ class TuiLauncher:
             "Configure common options",
             initial_args,
             options=self._common_options(command),
+            wizard_step=wizard_step_label(3, "Common options"),
+            argv_preview=argv_preview(argv),
         ).run_async()
         if common_values is None:
             return LauncherResult(cancelled=True)
         argv.extend(self._values_to_argv(command, common_values, initial_args))
 
         command_values = await OptionsFormApp(
-            "Configure command options",
+            f"Configure command options · {command_path_text(command)}",
             initial_args,
             options=self._command_options(command),
             arguments=command.arguments,
+            wizard_step=wizard_step_label(4, "Command options"),
+            argv_preview=argv_preview(argv),
         ).run_async()
         if command_values is None:
             return LauncherResult(cancelled=True)
@@ -86,14 +105,22 @@ class TuiLauncher:
         if command is not None and command.is_leaf:
             return command
 
-        return await CommandPickerApp(self.root, initial=command or self.root).run_async()
+        return await CommandPickerApp(
+            self.root,
+            initial=command or self.root,
+            wizard_step=wizard_step_label(1, "Select command"),
+        ).run_async()
 
-    async def _select_config(self, initial_args, command_scheme) -> Optional[List[str]]:
+    async def _select_config(self, initial_args, command_scheme, command) -> Optional[List[str]]:
         if getattr(initial_args, "config_name", None):
             return ["--config", initial_args.config_name]
         if getattr(initial_args, "config_path", None):
             return ["--config-path", initial_args.config_path]
-        selected = await ConfigPickerApp(discover_config_candidates(), command_scheme=command_scheme).run_async()
+        selected = await ConfigPickerApp(
+            discover_config_candidates(),
+            command_scheme=command_scheme,
+            wizard_step=wizard_step_label(2, f"Select config · {command_path_text(command)}"),
+        ).run_async()
         if selected is None:
             return None
         return [selected[0], selected[1]]
