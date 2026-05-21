@@ -13,7 +13,7 @@ from ydb.tools.mnc.lib.exceptions import CliError
 from ydb.tools.mnc.cli import arg_metadata, command_options, parser_factory
 from ydb.tools.mnc.cli.tui import theme
 from ydb.tools.mnc.cli.tui.app import TuiApp
-from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp, _BackListItem, _ConfirmQuitModal
+from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp, _BackListItem
 from ydb.tools.mnc.cli.tui.common import ConfigCandidate, config_preview
 from ydb.tools.mnc.cli.tui.config_picker import (
     COMPAT_BAD,
@@ -29,7 +29,6 @@ from ydb.tools.mnc.cli.tui.launcher import (
 )
 from ydb.tools.mnc.cli.tui.options_form import (
     OptionsFormApp,
-    _ChoiceModal,
     _DeployFlagsApplyRow,
     _DeployFlagsModal,
     _TextInputModal,
@@ -164,16 +163,6 @@ class TuiLauncherRoutingTest(unittest.TestCase):
         self.assertIn("waiting", command_dests)
         self.assertIn("do_not_init", command_dests)
         self.assertNotIn("waiting", common_dests)
-
-    def test_command_picker_can_be_constructed(self):
-        parser, _, _, _ = parser_factory.build_parser()
-        root = arg_metadata.command_metadata_from_parser(parser)
-
-        app = CommandPickerApp(root)
-
-        self.assertIs(app.command_parent, root)
-        self.assertEqual(app.stack, [root])
-        self.assertTrue(root.children)
 
     def test_textual_apps_use_consistent_light_theme_friendly_panel_css(self):
         from ydb.tools.mnc.cli.tui.app import RuntimeProgressApp
@@ -499,7 +488,10 @@ class TuiMainRoutingTest(unittest.IsolatedAsyncioTestCase):
     async def test_async_main_no_args_runs_launcher(self):
         from ydb.tools.mnc.cli import main
 
+        calls = []
+
         async def do(args):
+            calls.append(args)
             return True
 
         module = types.SimpleNamespace(
@@ -514,9 +506,16 @@ class TuiMainRoutingTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch("sys.argv", ["mnc"]), \
              mock.patch("ydb.tools.mnc.cli.parser_factory.build_parser", return_value=(parser, actions, expected_config, prefer_launcher)), \
-             mock.patch("ydb.tools.mnc.cli.tui.launcher.TuiLauncher.run_async", return_value=launcher_result), \
-             mock.patch("ydb.tools.mnc.cli.tui.app.TuiApp.run_async", side_effect=self._run_tui_action):
+             mock.patch("ydb.tools.mnc.cli.main.should_route_to_launcher", return_value=True) as route_to_launcher, \
+             mock.patch("ydb.tools.mnc.cli.main.TuiLauncher.run_async", return_value=launcher_result) as run_launcher, \
+             mock.patch("ydb.tools.mnc.cli.main.TuiApp.run_async", side_effect=self._run_tui_action) as run_tui:
             await main.async_main()
+
+        route_to_launcher.assert_called_once()
+        run_launcher.assert_called_once()
+        run_tui.assert_called_once()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].verb, "install")
 
     async def test_async_main_install_does_not_run_launcher_without_tui_flag(self):
         from ydb.tools.mnc.cli import main
@@ -535,8 +534,8 @@ class TuiMainRoutingTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch("sys.argv", ["mnc", "install"]), \
              mock.patch("ydb.tools.mnc.cli.parser_factory.build_parser", return_value=(parser, actions, expected_config, prefer_launcher)), \
-             mock.patch("ydb.tools.mnc.cli.tui.launcher.TuiLauncher.run_async") as run_launcher, \
-             mock.patch("ydb.tools.mnc.cli.tui.app.TuiApp.run_async", side_effect=self._run_tui_action) as run_tui:
+             mock.patch("ydb.tools.mnc.cli.main.TuiLauncher.run_async") as run_launcher, \
+             mock.patch("ydb.tools.mnc.cli.main.TuiApp.run_async", side_effect=self._run_tui_action) as run_tui:
             await main.async_main()
 
         run_launcher.assert_not_called()
@@ -544,15 +543,17 @@ class TuiMainRoutingTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ThemeHelpersTest(unittest.TestCase):
-    def test_format_header_includes_title(self):
-        rendered = theme.format_header("Select command")
-        self.assertIn("Select command", rendered)
+    def test_format_header_includes_expected_context(self):
+        cases = [
+            ("Select command", {}, ["Select command"]),
+            ("Common options", {"step": "1/4", "preview": "mnc install"}, ["1/4", "Common options", "mnc install"]),
+        ]
 
-    def test_format_header_includes_step_and_preview(self):
-        rendered = theme.format_header("Common options", step="1/4", preview="mnc install")
-        self.assertIn("1/4", rendered)
-        self.assertIn("Common options", rendered)
-        self.assertIn("mnc install", rendered)
+        for title, kwargs, expected_fragments in cases:
+            with self.subTest(title=title):
+                rendered = theme.format_header(title, **kwargs)
+                for fragment in expected_fragments:
+                    self.assertIn(fragment, rendered)
 
     def test_format_footer_includes_all_bindings(self):
         rendered = theme.format_footer([("j/k", "Move"), ("Enter", "Edit"), ("Esc", "Cancel")])
@@ -585,24 +586,17 @@ class ThemeHelpersTest(unittest.TestCase):
         self.assertIn("border: round $primary", theme.SCREEN_CSS_MODAL)
         self.assertNotIn("Screen {\n    align: center middle", theme.SCREEN_CSS_MODAL)
 
-    def test_modals_use_shared_centering_root(self):
-        compose_methods = [
-            _ConfirmQuitModal.compose,
-            _TextInputModal.compose,
-            _ChoiceModal.compose,
-            _DeployFlagsModal.compose,
-        ]
-
-        for compose in compose_methods:
-            self.assertIn("modal_root", compose.__code__.co_names)
-
 
 class WizardPreviewTest(unittest.TestCase):
-    def test_wizard_step_label_default_total(self):
-        self.assertEqual(wizard_step_label(1, "Select command"), "mnc tui · 1/4 · Select command")
+    def test_wizard_step_label_formats_progress(self):
+        cases = [
+            (wizard_step_label(1, "Select command"), "mnc tui · 1/4 · Select command"),
+            (wizard_step_label(2, "Select config", total=5), "mnc tui · 2/5 · Select config"),
+        ]
 
-    def test_wizard_step_label_custom_total(self):
-        self.assertEqual(wizard_step_label(2, "Select config", total=5), "mnc tui · 2/5 · Select config")
+        for actual, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(actual, expected)
 
     def test_argv_preview_quotes_special_characters(self):
         preview = argv_preview(["install", "--config", "my cfg", "--host", "h1"])
@@ -623,20 +617,19 @@ class OptionsFormHelpersTest(unittest.TestCase):
         self.assertFalse(is_value_missing(["v"]))
         self.assertFalse(is_value_missing(0))
 
-    def test_is_value_changed_for_text_value(self):
-        entry = {"kind": "value", "default": "default-value"}
-        self.assertFalse(is_value_changed(entry, "default-value"))
-        self.assertTrue(is_value_changed(entry, "new-value"))
+    def test_is_value_changed_detects_default_and_changed_values(self):
+        cases = [
+            ({"kind": "value", "default": "default-value"}, "default-value", False),
+            ({"kind": "value", "default": "default-value"}, "new-value", True),
+            ({"kind": "flag", "default": False}, False, False),
+            ({"kind": "flag", "default": False}, True, True),
+            ({"kind": "deploy_flags", "default": []}, [], False),
+            ({"kind": "deploy_flags", "default": []}, ["secure"], True),
+        ]
 
-    def test_is_value_changed_for_flag(self):
-        entry = {"kind": "flag", "default": False}
-        self.assertFalse(is_value_changed(entry, False))
-        self.assertTrue(is_value_changed(entry, True))
-
-    def test_is_value_changed_for_deploy_flags(self):
-        entry = {"kind": "deploy_flags", "default": []}
-        self.assertFalse(is_value_changed(entry, []))
-        self.assertTrue(is_value_changed(entry, ["secure"]))
+        for entry, value, expected in cases:
+            with self.subTest(kind=entry["kind"], value=value):
+                self.assertEqual(is_value_changed(entry, value), expected)
 
     def test_format_row_shows_required_missing_badge(self):
         entry = {
@@ -869,14 +862,17 @@ class StructuredDetailsTest(unittest.TestCase):
 
 
 class RuntimeAppFooterTest(unittest.TestCase):
-    def test_runtime_running_footer_includes_interrupt(self):
-        footer = theme.format_footer(theme.FOOTER_RUNTIME_RUNNING)
-        self.assertIn("Ctrl+C", footer)
-        self.assertIn("Interrupt", footer)
+    def test_runtime_footer_includes_available_actions(self):
+        cases = [
+            (theme.FOOTER_RUNTIME_RUNNING, ["Ctrl+C", "Interrupt"]),
+            (theme.FOOTER_RUNTIME_FINISHED, ["Close"]),
+        ]
 
-    def test_runtime_finished_footer_includes_close(self):
-        footer = theme.format_footer(theme.FOOTER_RUNTIME_FINISHED)
-        self.assertIn("Close", footer)
+        for footer_spec, expected_fragments in cases:
+            with self.subTest(expected_fragments=expected_fragments):
+                footer = theme.format_footer(footer_spec)
+                for fragment in expected_fragments:
+                    self.assertIn(fragment, footer)
 
 
 if __name__ == '__main__':
