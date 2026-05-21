@@ -6,6 +6,7 @@ import logging
 from functools import lru_cache
 
 import ydb.tools.mnc.scheme as scheme
+from ydb.tools.mnc.lib import output
 from ydb.tools.mnc.lib.exceptions import CliError, ConfigError
 
 
@@ -56,14 +57,14 @@ def oneof(elems):
 def is_directory(path):
     is_dir = os.path.isdir(path)
     if not is_dir:
-        print(f'Not a directory: {path}')
+        logger.error('Not a directory: %s', path)
     return is_dir
 
 
 def repeated_question(repeat_count, var, question, default, response_checker, lower=False):
     for idx in range(10):
         if question:
-            print(f'{question} (default: {default})')
+            output.get_console().print(f'{question} (default: {default})')
         val = input(f'{var}: ')
         if lower:
             val = val.lower()

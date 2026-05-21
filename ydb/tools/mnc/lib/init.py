@@ -19,7 +19,11 @@ async def act_static(config: dict, parent_task: progress.TaskNode = None):
     client.bootstrap_cluster("multinode_cluster")
     await bootstrap_task.update(advance=1)
     await bootstrap_task.update(visible=False)
-    return True
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK,
+        step_title="Init static",
+        message="static cluster initialized",
+    )
 
 
 @progress.with_parent_task
@@ -40,4 +44,8 @@ async def act_dynamic(config: dict, parent_task: progress.TaskNode = None):
         await database_task.update(advance=1)
     await database_task.update(visible=False)
 
-    return True
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK,
+        step_title="Init dynamic",
+        message="dynamic databases initialized",
+    )

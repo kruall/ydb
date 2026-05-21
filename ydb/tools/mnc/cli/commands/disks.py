@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from ydb.tools.mnc.lib import agent_client, common, progress, tools
+from ydb.tools.mnc.lib import agent_client, common, output, progress, tools
 from ydb.tools.mnc.scheme import multinode
 
 
@@ -40,7 +40,12 @@ async def check_devices(host: str, disks: dict):
 
 
 async def act_check(hosts: list[str], config: dict):
-    return all(await common.for_each_host(hosts, config["disks"], check_devices))
+    ok = all(await common.for_each_host(hosts, config["disks"], check_devices))
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Check disks",
+        message="all disks are ok" if ok else "some disks aren't ok",
+    )
 
 
 def _format_disk_info(disk: dict):
@@ -66,7 +71,16 @@ async def info(host: str):
 
 
 async def act_info(hosts: list[str], config):
-    return await asyncio.gather(*(info(host) for host in hosts))
+    reports = await asyncio.gather(*(info(host) for host in hosts))
+    ok = all(INFO_AGENT_FAILURE_MESSAGE not in report for report in reports)
+    lines = []
+    for report in reports:
+        lines.extend(report)
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Disk info",
+        message="\n".join(lines),
+    )
 
 
 async def split(
@@ -102,12 +116,23 @@ async def act_split(hosts: list[str], config, part_count: int = None, part_size:
     check_result = await act_check(hosts, config)
     if not check_result:
         logger.error("disks checking wasn't passed")
-        return False
-    return await tools.chain_async(
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.ERROR,
+            step_title="Split disks",
+            message="disks checking wasn't passed",
+            subresults=[check_result],
+        )
+    ok = await tools.chain_async(
         *(
             split(host, disks_for_split.get(host, []), part_count, part_size, parent_task=parent_task)
             for host in hosts
         )
+    )
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Split disks",
+        message="disks split completed" if ok else "failed to split disks",
+        subresults=[check_result],
     )
 
 
@@ -130,11 +155,16 @@ async def unite(host: str, devices: list[common.Device], parent_task: progress.T
 @progress.with_parent_task
 async def act_unite(hosts: list[str], config, parent_task: progress.TaskNode = None):
     disks_for_split = common.get_host_disks_for_split(config)
-    return await tools.chain_async(
+    ok = await tools.chain_async(
         *(
             unite(host, disks_for_split.get(host, []), parent_task=parent_task)
             for host in hosts
         )
+    )
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Unite disks",
+        message="disks unite completed" if ok else "failed to unite disks",
     )
 
 
@@ -157,11 +187,16 @@ async def obliterate(host: str, devices: list[common.Device], parent_task: progr
 @progress.with_parent_task
 async def act_obliterate(hosts, config, parent_task: progress.TaskNode = None):
     disks = common.get_host_disks(config)
-    return await tools.parallel_async(
+    ok = await tools.parallel_async(
         *(
             obliterate(host, disks.get(host, []), parent_task=parent_task)
             for host in hosts
         )
+    )
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Obliterate disks",
+        message="disks obliterate completed" if ok else "failed to obliterate disks",
     )
 
 
@@ -187,41 +222,43 @@ def add_arguments(parser):
     common.add_common_options(obliterate_parser)
 
 
+def _render_result(args, result: progress.TaskResult):
+    output.get_console().print(result.to_rich_panel(verbose=getattr(args, 'verbose', False)))
+
+
 async def do_check(args):
     hosts = await common.get_machines(args.config)
-    ok = await act_check(hosts, args.config)
-    if ok:
-        print("all disks are ok")
-    else:
-        print("some disks aren't ok")
-    return ok
+    result = await act_check(hosts, args.config)
+    _render_result(args, result)
+    return result
 
 
 async def do_info(args):
     hosts = await common.get_machines(args.config)
-    res = await act_info(hosts, args.config)
-    ok = True
-    for report in res:
-        if INFO_AGENT_FAILURE_MESSAGE in report:
-            ok = False
-        for line in report:
-            print(line)
-    return ok
+    result = await act_info(hosts, args.config)
+    _render_result(args, result)
+    return result
 
 
 async def do_split(args):
     hosts = await common.get_machines(args.config)
-    return await act_split(hosts, args.config, part_count=args.part_count, part_size=args.part_size)
+    result = await act_split(hosts, args.config, part_count=args.part_count, part_size=args.part_size)
+    _render_result(args, result)
+    return result
 
 
 async def do_unite(args):
     hosts = await common.get_machines(args.config)
-    return await act_unite(hosts, args.config)
+    result = await act_unite(hosts, args.config)
+    _render_result(args, result)
+    return result
 
 
 async def do_obliterate(args):
     hosts = await common.get_machines(args.config)
-    return await act_obliterate(hosts, args.config)
+    result = await act_obliterate(hosts, args.config)
+    _render_result(args, result)
+    return result
 
 
 async def do(args):

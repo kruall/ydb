@@ -1,7 +1,10 @@
-import rich
+import logging
 
-from ydb.tools.mnc.lib import common, configs
+from ydb.tools.mnc.lib import common, configs, output
 from ydb.tools.mnc.scheme import multinode
+
+
+logger = logging.getLogger(__name__)
 
 
 expected_config = multinode.scheme
@@ -15,11 +18,10 @@ def add_arguments(parser):
 
 
 async def do_generate(args):
-    console = rich.console.Console()
     hosts = await common.get_machines(args.config)
-    success = await configs.act_generate(hosts, args.config)
-    console.print('success' if success else 'fail')
-    return bool(success)
+    result = await configs.act_generate(hosts, args.config)
+    output.get_console().print(result.to_rich_panel(verbose=getattr(args, 'verbose', False)))
+    return result
 
 
 async def do(args):

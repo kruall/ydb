@@ -28,6 +28,9 @@ class InstallCommandTest(unittest.IsolatedAsyncioTestCase):
 
         return mock.patch.object(install.common, "get_machines", get_machines)
 
+    def patch_console(self):
+        return mock.patch.object(install.output, "get_console", return_value=Console())
+
     async def test_do_returns_act_result(self):
         args = types.SimpleNamespace(
             config=self.config(),
@@ -46,7 +49,9 @@ class InstallCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(install, "act", act):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(install, "act", act):
             self.assertFalse(await install.do(args))
 
     async def test_act_returns_progress_result(self):

@@ -2,10 +2,7 @@ import logging
 import asyncio
 import os.path
 
-import rich
-
-
-from ydb.tools.mnc.lib import agent_client, common, configs, deploy, deploy_ctx, init, progress, service, term, tools
+from ydb.tools.mnc.lib import agent_client, common, configs, deploy, deploy_ctx, init, output, progress, service, term, tools
 from ydb.tools.mnc.scheme import multinode
 
 from . import agent, disks, uninstall
@@ -315,7 +312,7 @@ def add_arguments(parser):
 
 
 async def do(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act(
         hosts,

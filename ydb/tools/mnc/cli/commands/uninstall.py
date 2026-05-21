@@ -1,9 +1,8 @@
 import logging
 from typing import List
 
-from ydb.tools.mnc.lib import agent_client, common, progress, service
+from ydb.tools.mnc.lib import agent_client, common, output, progress, service
 from ydb.tools.mnc.scheme import multinode
-import rich
 
 from . import disks
 
@@ -120,7 +119,7 @@ def add_arguments(parser):
 
 
 async def do(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act(
         hosts,

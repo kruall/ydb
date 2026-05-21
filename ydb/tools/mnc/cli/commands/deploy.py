@@ -1,7 +1,10 @@
-import rich
+import logging
 
-from ydb.tools.mnc.lib import common, deploy, deploy_ctx
+from ydb.tools.mnc.lib import common, deploy, deploy_ctx, output
 from ydb.tools.mnc.scheme import multinode
+
+
+logger = logging.getLogger(__name__)
 
 
 expected_config = multinode.scheme
@@ -50,13 +53,12 @@ async def do_update_bin(args):
 
 
 async def do(args):
-    console = rich.console.Console()
     actions = {
         'install': do_install,
         'uninstall': do_uninstall,
         'update_cfg': do_update_cfg,
         'update_bin': do_update_bin,
     }
-    ok = await actions[args.cmd](args)
-    console.print('success' if ok else 'failed')
-    return bool(ok)
+    result = await actions[args.cmd](args)
+    output.get_console().print(result.to_rich_panel(verbose=getattr(args, 'verbose', False)))
+    return result

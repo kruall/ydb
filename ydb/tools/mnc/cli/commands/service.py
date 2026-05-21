@@ -1,7 +1,10 @@
-import rich
+import logging
 
-from ydb.tools.mnc.lib import common, service
+from ydb.tools.mnc.lib import common, output, service
 from ydb.tools.mnc.scheme import multinode
+
+
+logger = logging.getLogger(__name__)
 
 
 expected_config = multinode.scheme
@@ -49,11 +52,10 @@ async def do_nodes(args):
 
 
 async def do(args):
-    console = rich.console.Console()
     actions = {
         'hosts': do_hosts,
         'nodes': do_nodes,
     }
-    ok = await actions[args.cmd](args)
-    console.print('success' if ok else 'operation failed')
-    return bool(ok)
+    result = await actions[args.cmd](args)
+    output.get_console().print(result.to_rich_panel(verbose=getattr(args, 'verbose', False)))
+    return result

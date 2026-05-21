@@ -2,7 +2,6 @@ import asyncio
 import collections
 import logging
 import re
-import sys
 import os
 import requests
 import time
@@ -218,29 +217,29 @@ def validate_servers(hosts, config, repeat_count=0):
                 continue
             break
         if repeated >= repeat_count:
-            print(f"Can't connect; {host}", file=sys.stderr)
+            logger.error("Can't connect; %s", host)
             success = False
             continue
         if response.status_code != 200:
-            print(f"Response wasn't 200 for /user; {host}", file=sys.stderr)
+            logger.error("Response wasn't 200 for /user; %s", host)
             success = False
             continue
         if response.json()['user'] != expected_user:
-            print(f"Host has different owner; {host} {response.json()['user']}", file=sys.stderr)
+            logger.error("Host has different owner; %s %s", host, response.json()['user'])
             success = False
             continue
         response = requests.post(f'http://{host}:{port}/info', json={'guid': config['guid']})
         if response.status_code != 200:
-            print(f"Response wasn't 200 for /info; {host}", file=sys.stderr)
+            logger.error("Response wasn't 200 for /info; %s", host)
             success = False
             continue
         data = response.json()
         if data['config'] != config:
-            print(f"Host config doesn't same; {host}")
+            logger.error("Host config doesn't same; %s", host)
             success = False
             continue
         if data['is_leader'] and not data.get('connected'):
-            print(f"Leader wasn't connected; {host}")
+            logger.error("Leader wasn't connected; %s", host)
             success = False
             continue
     return success

@@ -24,6 +24,9 @@ class AgentCommandTest(unittest.IsolatedAsyncioTestCase):
 
         return mock.patch.object(agent.common, "get_machines", get_machines)
 
+    def patch_console(self):
+        return mock.patch.object(agent.output, "get_console", return_value=Console())
+
     def test_agent_run_command_includes_target_host_port_and_home(self):
         with mock.patch.object(agent.deploy_ctx, "deploy_path", "/tmp/deploy"):
             self.assertEqual(
@@ -47,7 +50,9 @@ class AgentCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(agent, "act_uninstall", act_uninstall):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(agent, "act_uninstall", act_uninstall):
             self.assertFalse(await agent.do_uninstall(args))
 
     def test_make_start_steps_starts_waits_and_checks_health(self):
@@ -84,7 +89,9 @@ class AgentCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(agent, "act_start", act_start):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(agent, "act_start", act_start):
             self.assertFalse(await agent.do_start(args))
 
     async def test_do_stop_returns_act_stop_result(self):
@@ -95,7 +102,9 @@ class AgentCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(agent, "act_stop", act_stop):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(agent, "act_stop", act_stop):
             self.assertFalse(await agent.do_stop(args))
 
     async def test_do_restart_returns_act_restart_result(self):
@@ -108,7 +117,9 @@ class AgentCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(agent, "act_restart", act_restart):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(agent, "act_restart", act_restart):
             self.assertFalse(await agent.do_restart(args))
 
     def test_make_install_steps_has_build_and_health_check_by_default(self):
@@ -168,7 +179,9 @@ class AgentCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(agent, "act", act):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(agent, "act", act):
             self.assertFalse(await agent.do_install(args))
 
     async def test_act_returns_progress_result(self):

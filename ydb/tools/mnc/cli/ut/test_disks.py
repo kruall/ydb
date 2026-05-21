@@ -5,7 +5,8 @@ import unittest
 from unittest import mock
 
 from ydb.tools.mnc.cli.commands import disks
-from ydb.tools.mnc.cli.ut.helpers import ParentTask
+from ydb.tools.mnc.cli.ut.helpers import Console, ParentTask
+from ydb.tools.mnc.lib import progress
 
 
 class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
@@ -25,14 +26,26 @@ class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
 
         return mock.patch.object(disks.common, "get_machines", get_machines)
 
+    def patch_console(self):
+        return mock.patch.object(disks.output, "get_console", return_value=Console())
+
+    def task_result(self, ok, message=None):
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+            step_title="test",
+            message=message or ("ok" if ok else "error"),
+        )
+
     async def test_check_returns_false_on_failed_disk_check(self):
         args = types.SimpleNamespace(config={"disks": []})
 
         async def act_check(hosts, config):
             self.assertEqual(hosts, ["host1"])
-            return False
+            return self.task_result(False)
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_check", act_check):
+        with self.patch_get_machines(["host1"]), \
+                mock.patch.object(disks, "act_check", act_check), \
+                self.patch_console():
             self.assertFalse(await disks.do_check(args))
 
     async def test_do_split_returns_act_split_result(self):
@@ -42,9 +55,9 @@ class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(hosts, ["host1"])
             self.assertEqual(part_count, 2)
             self.assertIsNone(part_size)
-            return False
+            return self.task_result(False)
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_split", act_split):
+        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_split", act_split), self.patch_console():
             self.assertFalse(await disks.do_split(args))
 
     async def test_do_unite_returns_act_unite_result(self):
@@ -52,9 +65,9 @@ class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
 
         async def act_unite(hosts, config):
             self.assertEqual(hosts, ["host1"])
-            return False
+            return self.task_result(False)
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_unite", act_unite):
+        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_unite", act_unite), self.patch_console():
             self.assertFalse(await disks.do_unite(args))
 
     async def test_do_obliterate_returns_act_obliterate_result(self):
@@ -62,9 +75,9 @@ class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
 
         async def act_obliterate(hosts, config):
             self.assertEqual(hosts, ["host1"])
-            return False
+            return self.task_result(False)
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_obliterate", act_obliterate):
+        with self.patch_get_machines(["host1"]), mock.patch.object(disks, "act_obliterate", act_obliterate), self.patch_console():
             self.assertFalse(await disks.do_obliterate(args))
 
     async def test_do_info_returns_false_when_agent_info_fails(self):
@@ -72,11 +85,11 @@ class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
 
         async def act_info(hosts, config):
             self.assertEqual(hosts, ["host1"])
-            return [["host1", disks.INFO_AGENT_FAILURE_MESSAGE]]
+            return self.task_result(False, "host1\n" + disks.INFO_AGENT_FAILURE_MESSAGE)
 
         with self.patch_get_machines(["host1"]), \
                 mock.patch.object(disks, "act_info", act_info), \
-                mock.patch("builtins.print"):
+                self.patch_console():
             self.assertFalse(await disks.do_info(args))
 
     async def test_do_dispatches_all_command_results(self):
@@ -163,7 +176,7 @@ class DisksCommandTest(unittest.IsolatedAsyncioTestCase):
 
         async def act_check(hosts, config):
             calls.append(("check", hosts, config))
-            return False
+            return self.task_result(False)
 
         async def split(*args, **kwargs):
             calls.append(("split", args, kwargs))

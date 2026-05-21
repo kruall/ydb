@@ -125,9 +125,7 @@ async def one_host(command: str, host: str, ydb_node_ids: list[int] = None, node
         if idx % batch_size == batch_size - 1:
             ok = await cmd(command, host, current, force=force, has_agent=has_agent)
             if not ok:
-                print(
-                    'ERROR failed operation on ', host, ': ', command, ' ', len(processes), '/', len(processes), sep=''
-                )
+                logger.error('ERROR failed operation on %s: %s %s/%s', host, command, len(processes), len(processes))
                 return False
             await parent_task.update(advance=batch_size)
             if idx + 1 < n and command != 'stop' and not has_agent:
@@ -136,7 +134,7 @@ async def one_host(command: str, host: str, ydb_node_ids: list[int] = None, node
     if current:
         ok = await cmd(command, host, current, force=force, has_agent=has_agent)
         if not ok:
-            print('ERROR failed operation on ', host, ': ', command, ' ', len(processes), '/', len(processes), sep='')
+            logger.error('ERROR failed operation on %s: %s %s/%s', host, command, len(processes), len(processes))
             return False
         await subtask.update(advance=len(current))
     return True
@@ -150,7 +148,12 @@ async def act_hosts(command: str, hosts: list, node_type: str = None, parent_tas
     )
     for subtask in subtasks:
         await subtask.update(visible=False)
-    return all(result)
+    ok = all(result)
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Service hosts",
+        message=f"hosts {command} completed" if ok else f"failed to {command} hosts",
+    )
 
 
 @progress.with_parent_task
@@ -236,8 +239,13 @@ async def act_nodes(
     )
     if command == 'rolling_restart':
         if (nodes or exclude_nodes) and type != 'static':
-            print('For rolling-restart dynamic node specification was not implemented')
-            return False
+            message = 'For rolling-restart dynamic node specification was not implemented'
+            logger.error(message)
+            return progress.TaskResult(
+                level=progress.TaskResultLevel.ERROR,
+                step_title="Service nodes",
+                message=message,
+            )
         global nodes_semaphore
         nodes_semaphore = asyncio.Semaphore(in_flight)
         ok = True
@@ -247,14 +255,28 @@ async def act_nodes(
             )
         if type in ('dynamic', 'all'):
             ok = ok and await rolling_restart_dynamic(hosts, time_to_wait, parent_task=parent_task)
-        return ok
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+            step_title="Service nodes",
+            message="rolling restart completed" if ok else "rolling restart failed",
+        )
     else:
         if type != 'static':
-            print('The operation "{0}" was not implemented for dynamic nodes'.format(command))
-            return False
-        return await tools.parallel_async(
+            message = 'The operation "{0}" was not implemented for dynamic nodes'.format(command)
+            logger.error(message)
+            return progress.TaskResult(
+                level=progress.TaskResultLevel.ERROR,
+                step_title="Service nodes",
+                message=message,
+            )
+        ok = await tools.parallel_async(
             *(
                 one_host(command, host, ydb_node_ids, node_type='static', parent_task=parent_task)
                 for host, ydb_node_ids in locations_by_host.items()
             )
+        )
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+            step_title="Service nodes",
+            message=f"nodes {command} completed" if ok else f"failed to {command} nodes",
         )

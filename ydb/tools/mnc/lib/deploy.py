@@ -273,7 +273,13 @@ async def act_install(hosts, config, reinstall=False, parent_task: progress.Task
         logger.error('already installed on some hosts, use --reinstall for force installing')
         await act_uninstall(hosts, parent_task=parent_task, subtasks=subtasks)
     elif is_installed:
-        return False
+        message = 'already installed on some hosts, use --reinstall for force installing'
+        logger.error(message)
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.ERROR,
+            step_title="Install",
+            message=message,
+        )
 
     node_counts = configs.NodeCountByKind(config, hosts)
     dynamic_node_range_per_host = node_counts.dynamic_node_count_by_host()
@@ -297,7 +303,11 @@ async def act_install(hosts, config, reinstall=False, parent_task: progress.Task
         term.shell(f'rm -rf {deploy_ctx.work_directory}/tmp'),
         clear_subtasks(),
     )
-    return result
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if result else progress.TaskResultLevel.ERROR,
+        step_title="Install",
+        message="install completed" if result else "install failed",
+    )
 
 
 @progress.with_parent_task
@@ -312,7 +322,12 @@ async def act_uninstall(hosts, parent_task: progress.TaskNode = None, subtasks: 
         for subtask in subtasks_2:
             await subtask.update(visible=False)
 
-    return result
+    ok = all(result)
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if ok else progress.TaskResultLevel.ERROR,
+        step_title="Uninstall",
+        message="uninstall completed" if ok else "uninstall failed",
+    )
 
 
 @progress.with_parent_task
@@ -324,7 +339,13 @@ async def act_update_cfg(
     parent_task: progress.TaskNode = None,
 ):
     if not await make_archive_with_configs():
-        return False
+        message = 'failed to make archive with configs'
+        logger.error(message)
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.ERROR,
+            step_title="Update configs",
+            message=message,
+        )
     nodes_per_host = config['nodes_per_host']
     locations_by_host = common.get_node_locations_by_host(
         hosts, nodes_per_host, nodes, exclude_nodes
@@ -335,9 +356,18 @@ async def act_update_cfg(
         await prepare_tmp_dir_task.update(advance=1)
         ok = ok and await install_host(host, ids, parent_task=parent_task)
         if not ok:
-            logger.error(f'Operation was stopped by an error on install_host; host# {host} ids# {ids}')
-            return False
-    return True
+            message = f'Operation was stopped by an error on install_host; host# {host} ids# {ids}'
+            logger.error(message)
+            return progress.TaskResult(
+                level=progress.TaskResultLevel.ERROR,
+                step_title="Update configs",
+                message=message,
+            )
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK,
+        step_title="Update configs",
+        message="configs updated",
+    )
 
 
 @progress.with_parent_task
@@ -375,8 +405,6 @@ async def deploy_file(
 
         async def rsync_file_task(host):
             result = await tools.make_runtime_rsync_action(bin_path, host, result_path, frist_host_task)
-            if not result:
-                frist_host_task._progress.console().print(result.to_rich_panel())
             await frist_host_task.update(advance=1)
             return result
 
@@ -384,8 +412,6 @@ async def deploy_file(
 
         async def remote_rsync_task(first_node, other_host):
             result = await tools.make_runtime_remote_rsync_action(first_node, result_path, other_host, result_path, other_hosts_task)
-            if not result:
-                other_hosts_task._progress.console().print(result.to_rich_panel())
             await other_hosts_task.update(advance=1)
             return result
 
@@ -408,8 +434,6 @@ async def deploy_file(
             task = await deploy_bin_task.add_subtask(f"[bold cyan]deploy to[/] [yellow]{host}[/]", total=100)
             subtasks.append(task)
             result = await tools.make_runtime_rsync_action(bin_path, host, result_path, task)
-            if not result:
-                task._progress.console().print(result.to_rich_panel())
             return result
 
         update_bin_tasks.append(tools.parallel_async(*(rsync_file_task(host) for host in hosts)))
@@ -429,16 +453,24 @@ async def act_update_bin(
         build_ydb_step = tools.make_build_ydb_step(config['build_args'])
         result = await build_ydb_step.run(parent_task=parent_task)
         if not result:
-            parent_task._progress.console().print(result)
-            return False
+            return progress.TaskResult(
+                level=progress.TaskResultLevel.ERROR,
+                step_title="Update binary",
+                message="failed to build ydb binary",
+                subresults=[result],
+            )
         await build_ydb_step._task.update(visible=False)
 
     if deploy_ctx.do_strip:
         strip_ydb_step = tools.make_strip_ydb_step()
         result = await strip_ydb_step.run(parent_task=parent_task)
         if not result:
-            parent_task._progress.console().print(result)
-            return False
+            return progress.TaskResult(
+                level=progress.TaskResultLevel.ERROR,
+                step_title="Update binary",
+                message="failed to strip ydb binary",
+                subresults=[result],
+            )
         await strip_ydb_step._task.update(visible=False)
         source_bin_path = deploy_ctx.get_stripped_bin_path(source_bin_path)
 
@@ -463,4 +495,9 @@ async def act_update_bin(
             ),
         )
 
-    return await tools.chain_async(*update_bin_tasks)
+    result = await tools.chain_async(*update_bin_tasks)
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if result else progress.TaskResultLevel.ERROR,
+        step_title="Update binary",
+        message="binary updated" if result else "failed to update binary",
+    )

@@ -2,13 +2,20 @@ from . import mnc
 from . import multinode
 from . import agent
 
+import logging
+
 import yaml
-import sys
 
 from ydb.tools.mnc.lib.exceptions import SchemeError
 
 
+logger = logging.getLogger(__name__)
+
 modules = [mnc, multinode, agent]
+
+
+def _log_scheme_error(ex, obj, scheme):
+    logger.exception("Error during processing next obj and scheme: %s\n%s\n%s", ex, obj, scheme)
 
 
 def parse(path: str, scheme=None):
@@ -61,7 +68,7 @@ def _apply_scheme_choices(obj, scheme):
             return None, [f'''obj not matched to choises: gotten '{obj}' but expected {scheme['__type__']}''']
         return obj, []
     except Exception as Ex:
-        print(f"Error during processing next obj and scheme: {Ex}", obj, scheme, sep='\n', file=sys.stderr)
+        _log_scheme_error(Ex, obj, scheme)
         raise
 
 
@@ -69,7 +76,7 @@ def _apply_scheme_primitive(obj, scheme):
     try:
         return _safe_cast(obj, scheme['__type__'])
     except Exception as Ex:
-        print(f"Error during processing next obj and scheme: {Ex}", obj, scheme, sep='\n', file=sys.stderr)
+        _log_scheme_error(Ex, obj, scheme)
         raise
 
 
@@ -90,7 +97,7 @@ def _apply_scheme_list(obj, scheme):
             error_msgs += msgs
         return result, error_msgs
     except Exception as Ex:
-        print(f"Error during processing next obj and scheme: {Ex}", obj, scheme, sep='\n', file=sys.stderr)
+        _log_scheme_error(Ex, obj, scheme)
         raise
 
 
@@ -173,7 +180,7 @@ def _apply_scheme_object(obj, scheme):
             error_msgs += msgs
         return result, error_msgs
     except Exception as Ex:
-        print(f"Error during processing next obj and scheme: {Ex}", obj, scheme, sep='\n', file=sys.stderr)
+        _log_scheme_error(Ex, obj, scheme)
         raise
 
 

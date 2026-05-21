@@ -3,10 +3,9 @@ import logging
 import os.path
 import shlex
 
-import rich
 import yaml
 
-from ydb.tools.mnc.lib import agent_client, common, deploy_ctx, progress, service, term, tools
+from ydb.tools.mnc.lib import agent_client, common, deploy_ctx, output, progress, service, term, tools
 from ydb.tools.mnc.scheme import agent
 
 
@@ -247,6 +246,8 @@ def make_restart_steps(hosts: list[str], config: dict, waiting: int):
 
 
 async def run_agent_steps(steps, title: str, console=None):
+    if console is None:
+        console = output.get_console()
     with progress.MyProgress(console=console) as pbar:
         result = await progress.run_steps([steps], progress=pbar, title=title)
     console.print(result.to_rich_panel())
@@ -299,7 +300,7 @@ def add_arguments(parser):
 
 
 async def do_install(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act(
         hosts,
@@ -312,25 +313,25 @@ async def do_install(args):
 
 
 async def do_uninstall(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act_uninstall(hosts, console=console)
 
 
 async def do_start(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act_start(hosts, args.config, waiting=args.waiting, console=console)
 
 
 async def do_stop(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act_stop(hosts, console=console)
 
 
 async def do_restart(args):
-    console = rich.console.Console()
+    console = output.get_console()
     hosts = await common.get_machines(args.config)
     return await act_restart(hosts, args.config, waiting=args.waiting, console=console)
 

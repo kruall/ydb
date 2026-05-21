@@ -23,6 +23,9 @@ class UninstallCommandTest(unittest.IsolatedAsyncioTestCase):
 
         return mock.patch.object(uninstall.common, "get_machines", get_machines)
 
+    def patch_console(self):
+        return mock.patch.object(uninstall.output, "get_console", return_value=Console())
+
     async def test_do_returns_act_result(self):
         args = types.SimpleNamespace(config=self.config(), ignore_failed_stop=True)
 
@@ -32,7 +35,9 @@ class UninstallCommandTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(console)
             return False
 
-        with self.patch_get_machines(["host1"]), mock.patch.object(uninstall, "act", act):
+        with self.patch_get_machines(["host1"]), \
+                self.patch_console(), \
+                mock.patch.object(uninstall, "act", act):
             self.assertFalse(await uninstall.do(args))
 
     async def test_act_returns_progress_result(self):

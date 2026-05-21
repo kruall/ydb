@@ -3,7 +3,6 @@ import itertools
 import logging
 import random
 import re
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
@@ -471,7 +470,11 @@ async def act_generate(
     parent_task: progress.TaskNode = None,
 ):
     if not verify_config(config):
-        return False
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.ERROR,
+            step_title="Generate configs",
+            message="config validation failed",
+        )
 
     init_ports(config)
 
@@ -510,8 +513,13 @@ async def act_generate(
     await yaml_task.update(advance=1)
 
     if not success:
-        print('Failed to generate config.yaml', file=sys.stderr)
-        return False
+        message = 'Failed to generate config.yaml'
+        logger.error(message)
+        return progress.TaskResult(
+            level=progress.TaskResultLevel.ERROR,
+            step_title="Generate configs",
+            message=message,
+        )
 
     static_cfg_groups = GenerateStaticNodeConfigsCommands(list(hosts), config['nodes_per_host']).subgroups(50)
 
@@ -555,4 +563,8 @@ async def act_generate(
     for subtask in subtasks:
         await subtask.update(visible=False)
 
-    return success
+    return progress.TaskResult(
+        level=progress.TaskResultLevel.OK if success else progress.TaskResultLevel.ERROR,
+        step_title="Generate configs",
+        message="configs generated" if success else "failed to generate configs",
+    )
