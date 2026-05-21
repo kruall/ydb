@@ -98,6 +98,22 @@ def command_key(path: list[str]):
     return '/'.join(path)
 
 
+def reset_parser(parser):
+    for value in parser._values.values():
+        value.clear()
+    for argument in parser._free_arguments:
+        argument.clear()
+    seen_arguments = set()
+    for argument in parser._option_dict.values():
+        if id(argument) in seen_arguments:
+            continue
+        seen_arguments.add(id(argument))
+        argument.clear()
+    if parser._subparsers is not None:
+        for subparser in parser._subparsers._subparsers:
+            reset_parser(subparser)
+
+
 def apply_cached_options(parser, argv: list[str]):
     path, leaf_parser, command_end = command_from_argv(parser, argv)
     if not path:

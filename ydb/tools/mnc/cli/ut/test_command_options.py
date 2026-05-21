@@ -152,6 +152,24 @@ class CommandOptionsTest(unittest.TestCase):
         self.assertEqual(parsed.node_type, 'dynamic')
         self.assertNotIn('start', argv)
 
+    def test_reset_parser_allows_repeated_parse_args(self):
+        parser = make_parser()
+        argv = ['qemu', 'run', '--config', 'cfg1', '--host', 'h', '--disk-id', 'd']
+        parser.parse_args(argv)
+
+        # Without reset, a second parse_args() on the same parser would crash
+        # with "Value verb already assigned by qemu" because the dstool parser
+        # is stateful.
+        command_options.reset_parser(parser)
+        args = parser.parse_args(argv)
+        self.assertEqual(args.verb, 'qemu')
+        self.assertEqual(args.cmd, 'run')
+
+        command_options.reset_parser(parser)
+        args = parser.parse_args(['service', 'hosts', '--config', 'cfg1', 'start'])
+        self.assertEqual(args.verb, 'service')
+        self.assertEqual(args.operation, 'start')
+
 
 if __name__ == '__main__':
     unittest.main()

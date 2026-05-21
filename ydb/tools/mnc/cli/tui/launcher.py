@@ -78,6 +78,7 @@ class TuiLauncher:
             return LauncherResult(cancelled=True)
         argv.extend(self._values_to_argv(command, command_values, initial_args))
 
+        command_options.reset_parser(self.parser)
         return LauncherResult(args=self.parser.parse_args(argv), argv=argv)
 
     async def _select_command(self, initial_args) -> Optional[arg_metadata.CommandMeta]:
@@ -172,6 +173,7 @@ class TuiLauncher:
 
     def _parse_initial_args(self, argv: List[str], fallback):
         try:
+            command_options.reset_parser(self.parser)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 return self.parser.parse_args(argv)
         except (Exception, SystemExit):
