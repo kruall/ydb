@@ -10,11 +10,14 @@ CACHE_RELATIVE_PATH = os.path.join('.mnc', 'cache', 'command_options')
 CACHE_DIRECTORY_RELATIVE_PATH = os.path.dirname(CACHE_RELATIVE_PATH)
 EXCLUDED_DESTS = {
     '__breaker__',
+    'config_name',
+    'config_path',
     'help',
     'quiet',
     'tui',
     'verbose',
 }
+CONFIG_DESTS = {'config_name', 'config_path'}
 
 
 @dataclass
@@ -94,8 +97,21 @@ def ensure_private_cache_dir(path: str):
     os.chmod(path, 0o700)
 
 
-def command_key(path: list[str]):
-    return '/'.join(path)
+def command_key(path: list[str], config_key: str = None):
+    key = '/'.join(path)
+    if config_key:
+        return f'{key}|{config_key}'
+    return key
+
+
+def config_key_from_namespace(args):
+    config_path = getattr(args, 'config_path', None)
+    if config_path:
+        return f'config-path:{config_path}'
+    config_name = getattr(args, 'config_name', None)
+    if config_name:
+        return f'config:{config_name}'
+    return None
 
 
 def reset_parser(parser):
@@ -114,12 +130,13 @@ def reset_parser(parser):
             reset_parser(subparser)
 
 
-def apply_cached_options(parser, argv: list[str]):
+def apply_cached_options(parser, argv: list[str], config_key: str = None):
     path, leaf_parser, command_end = command_from_argv(parser, argv)
     if not path:
         return argv
 
-    cache_entry = load_cache().get(command_key(path), {})
+    key = command_key(path, config_key or config_key_from_argv(parser, argv))
+    cache_entry = load_cache().get(key, {})
     cached_tokens = cache_entry.get('tokens', [])
     if not isinstance(cached_tokens, list) or not cached_tokens:
         return argv
@@ -138,7 +155,7 @@ def save_command_options(parser, args):
 
     tokens = tokens_from_namespace(leaf_parser, args)
     data = load_cache()
-    key = command_key(path)
+    key = command_key(path, config_key_from_namespace(args))
     if tokens:
         data[key] = {'tokens': tokens}
     else:
@@ -211,6 +228,29 @@ def seen_dests_from_argv(parser, argv: list[str]):
     return seen
 
 
+def config_key_from_argv(parser, argv: list[str]):
+    current = parser
+    idx = 0
+    while idx < len(argv):
+        token = argv[idx]
+        option = find_option(current, token)
+        if option is not None:
+            group, idx = option_group(argv, idx, option)
+            if option.dest in CONFIG_DESTS:
+                value = option_value_from_group(group)
+                if value:
+                    if option.dest == 'config_path':
+                        return f'config-path:{value}'
+                    return f'config:{value}'
+            continue
+        if current._subparsers is not None and token in current._subparsers._subparser_dict:
+            current = current._subparsers[token]
+            idx += 1
+            continue
+        idx += 1
+    return None
+
+
 def filter_cached_tokens(parser, tokens: list[str], skipped_dests: set[str]):
     result = []
     free_arg_idx = 0
@@ -279,6 +319,17 @@ def append_value_tokens(tokens: list[str], alias: str, value):
         tokens.extend(str(item) for item in value)
     else:
         tokens.append(str(value))
+
+
+def option_value_from_group(group: list[str]):
+    if not group:
+        return None
+    token = group[0]
+    if '=' in token:
+        return token.split('=', 1)[1]
+    if len(group) > 1:
+        return group[1]
+    return None
 
 
 def unique_options(parser):

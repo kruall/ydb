@@ -34,7 +34,7 @@ def make_parser():
     return parser
 
 
-class CommandOptionsTest(unittest.TestCase):
+class CommandOptionsSaveTest(unittest.TestCase):
     def test_save_command_options_writes_effective_leaf_options(self):
         parser = make_parser()
         with tempfile.TemporaryDirectory() as home:
@@ -56,10 +56,8 @@ class CommandOptionsTest(unittest.TestCase):
                 data = command_options.load_cache()
 
         self.assertEqual(
-            data['nbs/create-disk']['tokens'],
+            data['nbs/create-disk|config:cfg1']['tokens'],
             [
-                '--config',
-                'cfg1',
                 '--endpoint',
                 'grpc://host1:2135',
                 '--disk-id',
@@ -71,6 +69,8 @@ class CommandOptionsTest(unittest.TestCase):
             ],
         )
 
+
+class CommandOptionsStorageTest(unittest.TestCase):
     def test_save_cache_uses_restrictive_permissions(self):
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {'HOME': home}):
@@ -89,15 +89,15 @@ class CommandOptionsTest(unittest.TestCase):
             command_options.save_cache({'nbs/create-disk': {'tokens': ['--endpoint', 'grpc://host1:2135']}})
             self.assertEqual(command_options.load_cache(), {})
 
+
+class CommandOptionsApplyTest(unittest.TestCase):
     def test_apply_cached_options_injects_missing_required_options(self):
         parser = make_parser()
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {'HOME': home}):
                 command_options.save_cache({
-                    'nbs/create-disk': {
+                    'nbs/create-disk|config:cfg1': {
                         'tokens': [
-                            '--config',
-                            'cfg1',
                             '--endpoint',
                             'grpc://host1:2135',
                             '--disk-id',
@@ -108,7 +108,10 @@ class CommandOptionsTest(unittest.TestCase):
                     },
                 })
 
-                argv = command_options.apply_cached_options(parser, ['nbs', 'create-disk', '--disk-id', 'new-disk'])
+                argv = command_options.apply_cached_options(
+                    parser,
+                    ['nbs', 'create-disk', '--config', 'cfg1', '--disk-id', 'new-disk'],
+                )
 
         args = parser.parse_args(argv)
 
@@ -118,7 +121,42 @@ class CommandOptionsTest(unittest.TestCase):
         self.assertEqual(args.blocks_count, 42)
         self.assertNotIn('old-disk', argv)
 
-    def test_global_options_are_not_cached(self):
+    def test_apply_cached_options_is_separated_by_config(self):
+        parser = make_parser()
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.dict(os.environ, {'HOME': home}):
+                command_options.save_cache({
+                    'nbs/create-disk|config:cfg1': {
+                        'tokens': ['--endpoint', 'grpc://host1:2135', '--blocks-count', '42'],
+                    },
+                })
+
+                argv = command_options.apply_cached_options(
+                    parser,
+                    ['nbs', 'create-disk', '--config', 'cfg2', '--disk-id', 'disk1'],
+                )
+
+        self.assertEqual(argv, ['nbs', 'create-disk', '--config', 'cfg2', '--disk-id', 'disk1'])
+
+    def test_position_arguments_are_cached_and_can_be_overridden(self):
+        parser = make_parser()
+        with tempfile.TemporaryDirectory() as home:
+            args = parser.parse_args(['service', 'hosts', '--config', 'cfg1', 'start', '--node-type', 'dynamic'])
+            with mock.patch.dict(os.environ, {'HOME': home}):
+                command_options.save_command_options(parser, args)
+                argv = command_options.apply_cached_options(parser, ['service', 'hosts', '--config', 'cfg1', 'stop'])
+
+        self.assertEqual(argv, ['service', 'hosts', '--config', 'cfg1', '--node-type', 'dynamic', 'stop'])
+        parsed = make_parser().parse_args(argv)
+
+        self.assertEqual(parsed.config_name, 'cfg1')
+        self.assertEqual(parsed.operation, 'stop')
+        self.assertEqual(parsed.node_type, 'dynamic')
+        self.assertNotIn('start', argv)
+
+
+class CommandOptionsTokenizationTest(unittest.TestCase):
+    def test_global_and_config_options_are_not_cached(self):
         parser = make_parser()
         args = parser.parse_args([
             '--verbose',
@@ -138,23 +176,10 @@ class CommandOptionsTest(unittest.TestCase):
         )
 
         self.assertNotIn('--verbose', tokens)
+        self.assertNotIn('--config', tokens)
 
-    def test_position_arguments_are_cached_and_can_be_overridden(self):
-        parser = make_parser()
-        with tempfile.TemporaryDirectory() as home:
-            args = parser.parse_args(['service', 'hosts', '--config', 'cfg1', 'start', '--node-type', 'dynamic'])
-            with mock.patch.dict(os.environ, {'HOME': home}):
-                command_options.save_command_options(parser, args)
-                argv = command_options.apply_cached_options(parser, ['service', 'hosts', 'stop'])
 
-        self.assertEqual(argv, ['service', 'hosts', '--config', 'cfg1', '--node-type', 'dynamic', 'stop'])
-        parsed = make_parser().parse_args(argv)
-
-        self.assertEqual(parsed.config_name, 'cfg1')
-        self.assertEqual(parsed.operation, 'stop')
-        self.assertEqual(parsed.node_type, 'dynamic')
-        self.assertNotIn('start', argv)
-
+class CommandOptionsParserStateTest(unittest.TestCase):
     def test_reset_parser_allows_repeated_parse_args(self):
         parser = make_parser()
         argv = ['nbs', 'create-disk', '--config', 'cfg1', '--disk-id', 'd', '--blocks-count', '42']

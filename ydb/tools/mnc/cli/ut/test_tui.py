@@ -10,7 +10,7 @@ import rich.console
 from ydb.tools.mnc.lib import progress
 from ydb.tools.mnc.lib.exceptions import CliError
 
-from ydb.tools.mnc.cli import arg_metadata, command_options, parser_factory
+from ydb.tools.mnc.cli import arg_metadata, parser_factory
 from ydb.tools.mnc.cli.tui import theme
 from ydb.tools.mnc.cli.tui.app import TuiApp
 from ydb.tools.mnc.cli.tui.command_picker import CommandPickerApp, _BackListItem
@@ -292,86 +292,6 @@ class TuiLauncherRoutingTest(unittest.TestCase):
         argv = launcher._values_to_argv(install, values, args)
 
         self.assertEqual(argv, ["--deploy-flags", "do_rebuild", "secure"])
-
-    def test_launcher_prefills_selected_command_from_cached_options(self):
-        parser, _, expected_config, _ = parser_factory.build_parser()
-        root = arg_metadata.command_metadata_from_parser(parser)
-        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
-        launcher = TuiLauncher(parser, expected_config)
-        initial_args = parser.parse_args([])
-
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {"HOME": home}):
-                command_options.save_cache({
-                    "nbs/create-disk": {
-                        "tokens": [
-                            "--config",
-                            "cfg1",
-                            "--disk-id",
-                            "disk1",
-                            "--blocks-count",
-                            "42",
-                        ],
-                    },
-                })
-
-                args = launcher._initial_args_with_cached_options(nbs_create_disk, initial_args)
-
-        self.assertEqual(args.verb, "nbs")
-        self.assertEqual(args.cmd, "create-disk")
-        self.assertEqual(args.config_name, "cfg1")
-        self.assertEqual(args.disk_id, "disk1")
-        self.assertEqual(args.blocks_count, 42)
-
-    def test_launcher_prefill_keeps_explicit_initial_argv_values(self):
-        parser, _, expected_config, _ = parser_factory.build_parser()
-        root = arg_metadata.command_metadata_from_parser(parser)
-        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
-        launcher = TuiLauncher(parser, expected_config)
-        initial_args = parser.parse_args([])
-
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {"HOME": home}):
-                command_options.save_cache({
-                    "nbs/create-disk": {
-                        "tokens": [
-                            "--config",
-                            "cfg1",
-                            "--disk-id",
-                            "old-disk",
-                            "--blocks-count",
-                            "42",
-                        ],
-                    },
-                })
-
-                args = launcher._initial_args_with_cached_options(
-                    nbs_create_disk,
-                    initial_args,
-                    ["nbs", "create-disk", "--disk-id", "new-disk"],
-                )
-
-        self.assertEqual(args.config_name, "cfg1")
-        self.assertEqual(args.disk_id, "new-disk")
-        self.assertEqual(args.blocks_count, 42)
-
-    def test_launcher_keeps_initial_args_when_cache_is_invalid(self):
-        parser, _, expected_config, _ = parser_factory.build_parser()
-        root = arg_metadata.command_metadata_from_parser(parser)
-        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
-        launcher = TuiLauncher(parser, expected_config)
-        initial_args = parser.parse_args([])
-
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {"HOME": home}):
-                command_options.save_cache({
-                    "nbs/create-disk": {"tokens": ["--unknown-option"]},
-                })
-
-                args = launcher._initial_args_with_cached_options(nbs_create_disk, initial_args)
-
-        self.assertIs(args, initial_args)
-
 
 class TuiAppErrorTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

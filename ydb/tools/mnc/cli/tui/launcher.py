@@ -64,15 +64,15 @@ class TuiLauncher:
         if command is None:
             return LauncherResult(cancelled=True)
 
-        initial_args = self._initial_args_with_cached_options(command, initial_args, initial_argv)
-        argv = self._global_argv(initial_args) + list(command.path)
-
         command_scheme = self.expected_config_by_verb.get(command.path[0])
+        config_arg = []
         if command_scheme:
             config_arg = await self._select_config(initial_args, command_scheme, command)
             if config_arg is None:
                 return LauncherResult(cancelled=True)
-            argv.extend(config_arg)
+
+        initial_args = self._initial_args_with_cached_options(command, initial_args, config_arg, initial_argv)
+        argv = self._global_argv(initial_args) + list(command.path) + list(config_arg)
 
         common_values = await OptionsFormApp(
             "Configure common options",
@@ -181,21 +181,31 @@ class TuiLauncher:
                 argv.append(value)
         return argv
 
-    def _initial_args_with_cached_options(self, command, initial_args, initial_argv: Optional[List[str]] = None):
+    def _initial_args_with_cached_options(
+        self,
+        command,
+        initial_args,
+        config_arg: Optional[List[str]] = None,
+        initial_argv: Optional[List[str]] = None,
+    ):
+        config_key = command_options.config_key_from_argv(self.parser, list(command.path) + list(config_arg or []))
         if initial_argv is not None:
-            path, _, _ = command_options.command_from_argv(self.parser, initial_argv)
+            path, _, command_end = command_options.command_from_argv(self.parser, initial_argv)
             if path == command.path:
+                argv = initial_argv
+                if config_arg and command_options.config_key_from_argv(self.parser, initial_argv) is None:
+                    argv = initial_argv[:command_end] + list(config_arg) + initial_argv[command_end:]
                 return self._parse_initial_args(
-                    command_options.apply_cached_options(self.parser, initial_argv),
+                    command_options.apply_cached_options(self.parser, argv, config_key=config_key),
                     initial_args,
                 )
 
-        cache_entry = command_options.load_cache().get(command_options.command_key(command.path), {})
+        cache_entry = command_options.load_cache().get(command_options.command_key(command.path, config_key), {})
         cached_tokens = cache_entry.get("tokens", [])
         if not isinstance(cached_tokens, list) or not cached_tokens:
             return initial_args
 
-        argv = self._global_argv(initial_args) + list(command.path) + cached_tokens
+        argv = self._global_argv(initial_args) + list(command.path) + list(config_arg or []) + cached_tokens
         return self._parse_initial_args(argv, initial_args)
 
     def _parse_initial_args(self, argv: List[str], fallback):

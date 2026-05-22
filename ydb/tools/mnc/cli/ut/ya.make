@@ -15,6 +15,7 @@ TEST_SRCS(
     test_uninstall.py
     test_verbose.py
     test_tui.py
+    test_tui_launcher_cache.py
 )
 
 PY_SRCS(
