@@ -7,7 +7,6 @@ from . import init
 from . import deploy
 from . import service
 from . import nbs
-from . import qemu
 
 
 modules = [
@@ -20,5 +19,4 @@ modules = [
     deploy,
     service,
     nbs,
-    qemu,
 ]

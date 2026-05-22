@@ -11,7 +11,6 @@ TEST_SRCS(
     test_nbs.py
     test_output.py
     test_progress.py
-    test_qemu.py
     test_service.py
     test_uninstall.py
     test_verbose.py

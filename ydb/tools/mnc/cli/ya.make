@@ -28,7 +28,6 @@ PY3_PROGRAM(mnc)
         commands/deploy.py
         commands/service.py
         commands/nbs.py
-        commands/qemu.py
     )
 
     PEERDIR(

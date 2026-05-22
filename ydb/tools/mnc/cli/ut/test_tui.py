@@ -296,82 +296,79 @@ class TuiLauncherRoutingTest(unittest.TestCase):
     def test_launcher_prefills_selected_command_from_cached_options(self):
         parser, _, expected_config, _ = parser_factory.build_parser()
         root = arg_metadata.command_metadata_from_parser(parser)
-        qemu_run = arg_metadata.find_command(root, ["qemu", "run"])
+        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
         launcher = TuiLauncher(parser, expected_config)
         initial_args = parser.parse_args([])
 
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {"HOME": home}):
                 command_options.save_cache({
-                    "qemu/run": {
+                    "nbs/create-disk": {
                         "tokens": [
                             "--config",
                             "cfg1",
-                            "--host",
-                            "host1",
                             "--disk-id",
                             "disk1",
-                            "--ssh-port",
-                            "2222",
+                            "--blocks-count",
+                            "42",
                         ],
                     },
                 })
 
-                args = launcher._initial_args_with_cached_options(qemu_run, initial_args)
+                args = launcher._initial_args_with_cached_options(nbs_create_disk, initial_args)
 
-        self.assertEqual(args.verb, "qemu")
-        self.assertEqual(args.cmd, "run")
+        self.assertEqual(args.verb, "nbs")
+        self.assertEqual(args.cmd, "create-disk")
         self.assertEqual(args.config_name, "cfg1")
-        self.assertEqual(args.host, "host1")
         self.assertEqual(args.disk_id, "disk1")
-        self.assertEqual(args.ssh_port, 2222)
+        self.assertEqual(args.blocks_count, 42)
 
     def test_launcher_prefill_keeps_explicit_initial_argv_values(self):
         parser, _, expected_config, _ = parser_factory.build_parser()
         root = arg_metadata.command_metadata_from_parser(parser)
-        qemu_run = arg_metadata.find_command(root, ["qemu", "run"])
+        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
         launcher = TuiLauncher(parser, expected_config)
         initial_args = parser.parse_args([])
 
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {"HOME": home}):
                 command_options.save_cache({
-                    "qemu/run": {
+                    "nbs/create-disk": {
                         "tokens": [
                             "--config",
                             "cfg1",
-                            "--host",
-                            "host1",
                             "--disk-id",
                             "old-disk",
+                            "--blocks-count",
+                            "42",
                         ],
                     },
                 })
 
                 args = launcher._initial_args_with_cached_options(
-                    qemu_run,
+                    nbs_create_disk,
                     initial_args,
-                    ["qemu", "run", "--disk-id", "new-disk"],
+                    ["nbs", "create-disk", "--disk-id", "new-disk"],
                 )
 
         self.assertEqual(args.config_name, "cfg1")
-        self.assertEqual(args.host, "host1")
         self.assertEqual(args.disk_id, "new-disk")
+        self.assertEqual(args.blocks_count, 42)
 
     def test_launcher_keeps_initial_args_when_cache_is_invalid(self):
         parser, _, expected_config, _ = parser_factory.build_parser()
         root = arg_metadata.command_metadata_from_parser(parser)
-        qemu_run = arg_metadata.find_command(root, ["qemu", "run"])
+        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
         launcher = TuiLauncher(parser, expected_config)
         initial_args = parser.parse_args([])
 
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {"HOME": home}):
                 command_options.save_cache({
-                    "qemu/run": {"tokens": ["--unknown-option"]},
+                    "nbs/create-disk": {"tokens": ["--unknown-option"]},
                 })
 
-                args = launcher._initial_args_with_cached_options(qemu_run, initial_args)
+                args = launcher._initial_args_with_cached_options(nbs_create_disk, initial_args)
 
         self.assertIs(args, initial_args)
 
@@ -735,18 +732,18 @@ class OptionsFormAppTest(unittest.IsolatedAsyncioTestCase):
     def test_options_form_submit_blocks_when_required_value_is_missing(self):
         parser, _, _, _ = parser_factory.build_parser()
         root = arg_metadata.command_metadata_from_parser(parser)
-        qemu_run = arg_metadata.find_command(root, ["qemu", "run"])
+        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
         args = argparse.Namespace()
-        for option in qemu_run.options:
+        for option in nbs_create_disk.options:
             setattr(args, option.dest, option.default)
-        for argument in qemu_run.arguments:
+        for argument in nbs_create_disk.arguments:
             setattr(args, argument.dest, None)
 
         app = OptionsFormApp(
             "Command options",
             args,
-            options=qemu_run.options,
-            arguments=qemu_run.arguments,
+            options=nbs_create_disk.options,
+            arguments=nbs_create_disk.arguments,
         )
 
         required_entries = [entry for entry in app._entries if entry.get("required") and entry["kind"] != "flag"]
@@ -821,12 +818,12 @@ class StructuredDetailsTest(unittest.TestCase):
     def test_command_summary_for_leaf_lists_arguments_section(self):
         parser, _, _, _ = parser_factory.build_parser()
         root = arg_metadata.command_metadata_from_parser(parser)
-        qemu_run = arg_metadata.find_command(root, ["qemu", "run"])
+        nbs_create_disk = arg_metadata.find_command(root, ["nbs", "create-disk"])
 
-        summary = arg_metadata.command_summary_text(qemu_run)
+        summary = arg_metadata.command_summary_text(nbs_create_disk)
 
-        self.assertIn("qemu run", summary)
-        if qemu_run.arguments:
+        self.assertIn("nbs create-disk", summary)
+        if nbs_create_disk.arguments:
             self.assertIn("Arguments", summary)
 
     def test_config_preview_shows_status_compatible_first(self):

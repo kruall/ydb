@@ -14,15 +14,15 @@ def make_parser():
     parser.add_argument('--verbose', '-V', dest='verbose', action='store_true', default=False)
     subparsers = parser.add_subparsers(dest='verb', required=True)
 
-    qemu_parser = subparsers.add_parser('qemu')
-    qemu_subparsers = qemu_parser.add_subparsers(dest='cmd', required=True)
+    nbs_parser = subparsers.add_parser('nbs')
+    nbs_subparsers = nbs_parser.add_subparsers(dest='cmd', required=True)
 
-    run_parser = qemu_subparsers.add_parser('run')
-    common.add_common_options(run_parser)
-    run_parser.add_argument('--host', required=True)
-    run_parser.add_argument('--disk-id', required=True)
-    run_parser.add_argument('--no-start-endpoint', action='store_true', default=False)
-    run_parser.add_argument('--ssh-port', type=int, default=8679)
+    create_disk_parser = nbs_subparsers.add_parser('create-disk')
+    common.add_common_options(create_disk_parser)
+    create_disk_parser.add_argument('--endpoint', default=None)
+    create_disk_parser.add_argument('--disk-id', required=True)
+    create_disk_parser.add_argument('--blocks-count', required=True, type=int)
+    create_disk_parser.add_argument('--block-size', type=int, default=4096)
 
     service_parser = subparsers.add_parser('service')
     service_subparsers = service_parser.add_subparsers(dest='cmd', required=True)
@@ -39,15 +39,16 @@ class CommandOptionsTest(unittest.TestCase):
         parser = make_parser()
         with tempfile.TemporaryDirectory() as home:
             args = parser.parse_args([
-                'qemu',
-                'run',
+                'nbs',
+                'create-disk',
                 '--config',
                 'cfg1',
-                '--host',
-                'host1',
+                '--endpoint',
+                'grpc://host1:2135',
                 '--disk-id',
                 'disk1',
-                '--no-start-endpoint',
+                '--blocks-count',
+                '42',
             ])
 
             with mock.patch.dict(os.environ, {'HOME': home}):
@@ -55,24 +56,25 @@ class CommandOptionsTest(unittest.TestCase):
                 data = command_options.load_cache()
 
         self.assertEqual(
-            data['qemu/run']['tokens'],
+            data['nbs/create-disk']['tokens'],
             [
                 '--config',
                 'cfg1',
-                '--host',
-                'host1',
+                '--endpoint',
+                'grpc://host1:2135',
                 '--disk-id',
                 'disk1',
-                '--no-start-endpoint',
-                '--ssh-port',
-                '8679',
+                '--blocks-count',
+                '42',
+                '--block-size',
+                '4096',
             ],
         )
 
     def test_save_cache_uses_restrictive_permissions(self):
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {'HOME': home}):
-                command_options.save_cache({'qemu/run': {'tokens': ['--host', 'host1']}})
+                command_options.save_cache({'nbs/create-disk': {'tokens': ['--endpoint', 'grpc://host1:2135']}})
                 path = command_options.cache_path()
 
             cache_dir = os.path.dirname(path)
@@ -84,7 +86,7 @@ class CommandOptionsTest(unittest.TestCase):
     def test_cache_is_disabled_without_home(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(command_options.cache_path())
-            command_options.save_cache({'qemu/run': {'tokens': ['--host', 'host1']}})
+            command_options.save_cache({'nbs/create-disk': {'tokens': ['--endpoint', 'grpc://host1:2135']}})
             self.assertEqual(command_options.load_cache(), {})
 
     def test_apply_cached_options_injects_missing_required_options(self):
@@ -92,41 +94,42 @@ class CommandOptionsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             with mock.patch.dict(os.environ, {'HOME': home}):
                 command_options.save_cache({
-                    'qemu/run': {
+                    'nbs/create-disk': {
                         'tokens': [
                             '--config',
                             'cfg1',
-                            '--host',
-                            'host1',
+                            '--endpoint',
+                            'grpc://host1:2135',
                             '--disk-id',
                             'old-disk',
-                            '--no-start-endpoint',
+                            '--blocks-count',
+                            '42',
                         ],
                     },
                 })
 
-                argv = command_options.apply_cached_options(parser, ['qemu', 'run', '--disk-id', 'new-disk'])
+                argv = command_options.apply_cached_options(parser, ['nbs', 'create-disk', '--disk-id', 'new-disk'])
 
         args = parser.parse_args(argv)
 
         self.assertEqual(args.config_name, 'cfg1')
-        self.assertEqual(args.host, 'host1')
+        self.assertEqual(args.endpoint, 'grpc://host1:2135')
         self.assertEqual(args.disk_id, 'new-disk')
-        self.assertTrue(args.no_start_endpoint)
+        self.assertEqual(args.blocks_count, 42)
         self.assertNotIn('old-disk', argv)
 
     def test_global_options_are_not_cached(self):
         parser = make_parser()
         args = parser.parse_args([
             '--verbose',
-            'qemu',
-            'run',
+            'nbs',
+            'create-disk',
             '--config',
             'cfg1',
-            '--host',
-            'host1',
             '--disk-id',
             'disk1',
+            '--blocks-count',
+            '42',
         ])
 
         tokens = command_options.tokens_from_namespace(
@@ -154,16 +157,16 @@ class CommandOptionsTest(unittest.TestCase):
 
     def test_reset_parser_allows_repeated_parse_args(self):
         parser = make_parser()
-        argv = ['qemu', 'run', '--config', 'cfg1', '--host', 'h', '--disk-id', 'd']
+        argv = ['nbs', 'create-disk', '--config', 'cfg1', '--disk-id', 'd', '--blocks-count', '42']
         parser.parse_args(argv)
 
         # Without reset, a second parse_args() on the same parser would crash
-        # with "Value verb already assigned by qemu" because the dstool parser
+        # with "Value verb already assigned by nbs" because the dstool parser
         # is stateful.
         command_options.reset_parser(parser)
         args = parser.parse_args(argv)
-        self.assertEqual(args.verb, 'qemu')
-        self.assertEqual(args.cmd, 'run')
+        self.assertEqual(args.verb, 'nbs')
+        self.assertEqual(args.cmd, 'create-disk')
 
         command_options.reset_parser(parser)
         args = parser.parse_args(['service', 'hosts', '--config', 'cfg1', 'start'])
