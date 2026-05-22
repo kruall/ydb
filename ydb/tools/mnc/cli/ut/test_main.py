@@ -217,7 +217,7 @@ class CliMainTest(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(SystemExit):
                         await main.async_main()
 
-    async def test_async_main_applies_cached_options_for_tui(self):
+    async def test_async_main_does_not_apply_cached_options_before_tui_runtime(self):
         seen = {}
 
         async def do(args):
@@ -228,7 +228,7 @@ class CliMainTest(unittest.IsolatedAsyncioTestCase):
             return await action(None)
 
         def add_arguments(parser):
-            parser.add_argument("--host", required=True)
+            parser.add_argument("--host", default=None)
 
         module = types.SimpleNamespace(
             __name__="ydb.tools.mnc.cli.commands.cached",
@@ -246,4 +246,47 @@ class CliMainTest(unittest.IsolatedAsyncioTestCase):
                      mock.patch("ydb.tools.mnc.cli.tui.app.TuiApp.run_async", side_effect=run_tui_action):
                     await main.async_main()
 
-        self.assertEqual(seen["host"], "cached-host")
+        self.assertIsNone(seen["host"])
+
+    async def test_async_main_ignores_cache_save_errors_for_tui(self):
+        seen = {}
+
+        async def do(args):
+            seen["ran"] = True
+            return True
+
+        async def run_tui_action(action):
+            return await action(None)
+
+        module = types.SimpleNamespace(
+            __name__="ydb.tools.mnc.cli.commands.cached",
+            expected_config=None,
+            add_arguments=lambda parser: None,
+            do=do,
+        )
+
+        with _patch_parser(module), \
+             mock.patch("sys.argv", ["mnc", "--tui", "cached"]), \
+             mock.patch("ydb.tools.mnc.cli.tui.app.TuiApp.run_async", side_effect=run_tui_action), \
+             mock.patch("ydb.tools.mnc.cli.command_options.save_command_options", side_effect=OSError("readonly")):
+            await main.async_main()
+
+        self.assertTrue(seen["ran"])
+
+    async def test_async_main_does_not_save_command_options_without_tui(self):
+        async def do(args):
+            return True
+
+        module = types.SimpleNamespace(
+            __name__="ydb.tools.mnc.cli.commands.cached",
+            expected_config=None,
+            add_arguments=lambda parser: None,
+            do=do,
+        )
+
+        with _patch_parser(module), \
+             mock.patch("sys.argv", ["mnc", "cached"]), \
+             mock.patch("ydb.tools.mnc.cli.command_options.save_command_options") as save_cache:
+            await main.async_main()
+
+        save_cache.assert_not_called()

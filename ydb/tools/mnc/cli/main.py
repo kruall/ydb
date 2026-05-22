@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import tempfile
 
@@ -14,11 +15,20 @@ from ydb.tools.mnc.cli.tui import TuiApp, TuiLauncher, should_route_to_launcher
 import ydb.tools.mnc.scheme as scheme
 
 
+logger = logging.getLogger(__name__)
+
+
+def save_command_options_best_effort(parser, args):
+    try:
+        command_options.save_command_options(parser, args)
+    except Exception as error:
+        logger.debug("Failed to save command options cache: %s", error)
+
+
 async def async_main():
     parser, actions, expected_config, prefer_launcher = parser_factory.build_parser()
     raw_argv = sys.argv[1:]
-    initial_argv = command_options.apply_cached_options(parser, raw_argv) if "--tui" in raw_argv else raw_argv
-    args = parser.parse_args(initial_argv)
+    args = parser.parse_args(raw_argv)
 
     # Initialize output management
     if args.verbose:
@@ -53,7 +63,8 @@ async def async_main():
                 cfg['deploy_flags'] = scheme.common.merge_deploy_flags(cfg.get('deploy_flags', []), args.deploy_flags)
             deploy_ctx.apply_cfg(cfg, command_scheme)
             setattr(args, "config", cfg)
-        command_options.save_command_options(parser, args)
+        if launcher_used or args.tui:
+            save_command_options_best_effort(parser, args)
         result = await actions[args.verb](args)
         if not result:
             raise CliError(f"Command '{args.verb}' failed", result=result)
