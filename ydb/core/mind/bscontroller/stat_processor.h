@@ -7,7 +7,9 @@
 namespace NKikimr::NBsController {
 
     struct TEvControllerNotifyGroupChange : TEventLocal<TEvControllerNotifyGroupChange, TEvBlobStorage::EvControllerNotifyGroupChange> {
-        TVector<TGroupId> Created;
+        using TVDiskServiceIds = TSet<TActorId>;
+
+        TMap<TGroupId, TVDiskServiceIds> Updated;
         TVector<TGroupId> Deleted;
     };
 

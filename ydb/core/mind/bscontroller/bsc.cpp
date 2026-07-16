@@ -893,10 +893,30 @@ void TBlobStorageController::SetHostRecords(THostRecordMap hostRecords) {
     Execute(CreateTxInitScheme());
 }
 
+void TBlobStorageController::AddStatProcessorGroupUpdate(TEvControllerNotifyGroupChange& ev, const TGroupInfo& group) {
+    auto& vdiskServiceIds = ev.Updated[group.ID];
+    if (group.DDisk) {
+        return;
+    }
+
+    for (const TVSlotInfo *vslot : group.VDisksInGroup) {
+        if (!vslot) {
+            continue;
+        }
+
+        const TVSlotId& id = vslot->VSlotId;
+        vdiskServiceIds.emplace(MakeBlobStorageVDiskID(id.NodeId, id.PDiskId, id.VSlotId));
+        for (const TVSlotId& donorId : vslot->Donors) {
+            vdiskServiceIds.emplace(MakeBlobStorageVDiskID(donorId.NodeId, donorId.PDiskId, donorId.VSlotId));
+        }
+    }
+}
+
 void TBlobStorageController::IssueInitialGroupContent() {
     auto ev = MakeHolder<TEvControllerNotifyGroupChange>();
-    for (const auto& kv : GroupMap) {
-        ev->Created.push_back(kv.first);
+    for (const auto& [groupId, group] : GroupMap) {
+        Y_UNUSED(groupId);
+        AddStatProcessorGroupUpdate(*ev, *group);
     }
     Send(StatProcessorActorId, ev.Release());
 }

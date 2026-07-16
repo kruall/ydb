@@ -1939,6 +1939,7 @@ private:
     void Handle(TEvBlobStorage::TEvControllerScrubQuantumFinished::TPtr ev);
     void Handle(TEvBlobStorage::TEvControllerScrubReportQuantumInProgress::TPtr ev);
 
+    static void AddStatProcessorGroupUpdate(TEvControllerNotifyGroupChange& ev, const TGroupInfo& group);
     void IssueInitialGroupContent();
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -12,14 +12,20 @@ namespace NKikimr::NBsController {
             };
 
             TGroupStat Accum;
-            THashMap<TActorId, TPerAggregatorInfo> PerAggegatorInfo;
+            THashMap<TActorId, TPerAggregatorInfo> PerAggregatorInfo;
+            TEvControllerNotifyGroupChange::TVDiskServiceIds VDiskServiceIds;
             TGroupLatencyStats Stats;
 
-            void Update(const NKikimrBlobStorage::TEvGroupStatReport& report, TInstant now, TGroupId groupId, TGroupCleanupSchedule& schedule) {
+            bool Update(const NKikimrBlobStorage::TEvGroupStatReport& report, TInstant now, TGroupId groupId,
+                    TGroupCleanupSchedule& schedule) {
+                const TActorId vdiskServiceId = ActorIdFromProto(report.GetVDiskServiceId());
+                if (!VDiskServiceIds.contains(vdiskServiceId)) {
+                    return false;
+                }
+
                 TGroupStat stat;
                 if (stat.Deserialize(report)) {
-                    const TActorId vdiskServiceId = ActorIdFromProto(report.GetVDiskServiceId());
-                    auto& item = PerAggegatorInfo[vdiskServiceId];
+                    auto& item = PerAggregatorInfo[vdiskServiceId];
                     Accum.Replace(stat, item.Stat);
                     item.Stat = std::move(stat);
 
@@ -28,15 +34,47 @@ namespace NKikimr::NBsController {
                         schedule.erase(item.ScheduleIter);
                     }
                     item.ScheduleIter = schedule.emplace(barrier, std::make_pair(groupId, vdiskServiceId));
+                    return true;
                 }
+                return false;
             }
 
-            void Cleanup(const TActorId& vdiskServiceId) {
-                auto it = PerAggegatorInfo.find(vdiskServiceId);
-                Y_ABORT_UNLESS(it != PerAggegatorInfo.end());
-                auto& item = it->second;
+            bool Cleanup(const TActorId& vdiskServiceId, TGroupCleanupSchedule::iterator scheduleIter) {
+                auto it = PerAggregatorInfo.find(vdiskServiceId);
+                if (it == PerAggregatorInfo.end() || it->second.ScheduleIter != scheduleIter) {
+                    return false;
+                }
+                const auto& item = it->second;
                 Accum.Subtract(item.Stat);
-                PerAggegatorInfo.erase(it);
+                PerAggregatorInfo.erase(it);
+                return true;
+            }
+
+            bool UpdateVDiskServiceIds(TEvControllerNotifyGroupChange::TVDiskServiceIds&& vdiskServiceIds,
+                    TGroupCleanupSchedule& schedule) {
+                VDiskServiceIds = std::move(vdiskServiceIds);
+
+                bool changed = false;
+                for (auto it = PerAggregatorInfo.begin(); it != PerAggregatorInfo.end(); ) {
+                    if (VDiskServiceIds.contains(it->first)) {
+                        ++it;
+                    } else {
+                        const auto next = std::next(it);
+                        Accum.Subtract(it->second.Stat);
+                        schedule.erase(it->second.ScheduleIter);
+                        PerAggregatorInfo.erase(it);
+                        it = next;
+                        changed = true;
+                    }
+                }
+                return changed;
+            }
+
+            void Clear(TGroupCleanupSchedule& schedule) {
+                for (const auto& [vdiskServiceId, item] : PerAggregatorInfo) {
+                    Y_UNUSED(vdiskServiceId);
+                    schedule.erase(item.ScheduleIter);
+                }
             }
 
             void RecalculatePercentiles() {
@@ -80,44 +118,40 @@ namespace NKikimr::NBsController {
                 const TGroupId groupId = TGroupId::FromProto(&item, &NKikimrBlobStorage::TEvGroupStatReport::GetGroupId);
                 auto it = Groups.find(groupId);
                 if (it != Groups.end()) {
-                    it->second.Update(item, now, groupId, GroupCleanupSchedule);
-                    ids.insert(groupId);
+                    if (it->second.Update(item, now, groupId, GroupCleanupSchedule)) {
+                        ids.insert(groupId);
+                    }
                 }
             }
 
-            // cleanup obsolete items from the schedule
-            TGroupCleanupSchedule::iterator it;
-            for (it = GroupCleanupSchedule.begin(); it != GroupCleanupSchedule.end() && it->first <= now; ++it) {
-                TGroupId groupId;
-                TActorId vdiskServiceId;
-                std::tie(groupId, vdiskServiceId) = it->second;
-                auto groupIt = Groups.find(groupId);
-                if (groupIt != Groups.end()) {
-                    groupIt->second.Cleanup(vdiskServiceId);
-                    ids.insert(groupId);
-                }
-            }
-            GroupCleanupSchedule.erase(GroupCleanupSchedule.begin(), it);
+            CleanupExpired(now, ids);
 
             // recalculate percentiles for changed groups
-            for (const TGroupId& groupId : ids) {
-                Groups[groupId].RecalculatePercentiles();
-                UpdatedGroupIds.insert(groupId);
-            }
+            RecalculateGroups(ids);
         }
 
         void Handle(TEvControllerNotifyGroupChange::TPtr& ev) {
-            for (TGroupId groupId : ev->Get()->Created) {
-                Groups.emplace(groupId, TPerGroupRecord());
-                UpdatedGroupIds.insert(groupId);
-            }
             for (TGroupId groupId : ev->Get()->Deleted) {
-                Groups.erase(groupId);
+                if (auto it = Groups.find(groupId); it != Groups.end()) {
+                    it->second.Clear(GroupCleanupSchedule);
+                    Groups.erase(it);
+                }
                 UpdatedGroupIds.erase(groupId);
+            }
+            for (auto& [groupId, vdiskServiceIds] : ev->Get()->Updated) {
+                auto [it, inserted] = Groups.try_emplace(groupId);
+                if (it->second.UpdateVDiskServiceIds(std::move(vdiskServiceIds), GroupCleanupSchedule) || inserted) {
+                    it->second.RecalculatePercentiles();
+                    UpdatedGroupIds.insert(groupId);
+                }
             }
         }
 
         void HandleWakeup() {
+            TSet<TGroupId> ids;
+            CleanupExpired(TActivationContext::Now(), ids);
+            RecalculateGroups(ids);
+
             if (UpdatedGroupIds) {
                 auto ev = MakeHolder<TEvControllerCommitGroupLatencies>();
 
@@ -146,6 +180,27 @@ namespace NKikimr::NBsController {
             }
 
             Schedule(UpdatePeriod, new TEvents::TEvWakeup);
+        }
+
+        void CleanupExpired(TInstant now, TSet<TGroupId>& ids) {
+            while (GroupCleanupSchedule && GroupCleanupSchedule.begin()->first <= now) {
+                const auto scheduleIt = GroupCleanupSchedule.begin();
+                const auto [groupId, vdiskServiceId] = scheduleIt->second;
+                if (auto groupIt = Groups.find(groupId); groupIt != Groups.end() &&
+                        groupIt->second.Cleanup(vdiskServiceId, scheduleIt)) {
+                    ids.insert(groupId);
+                }
+                GroupCleanupSchedule.erase(scheduleIt);
+            }
+        }
+
+        void RecalculateGroups(const TSet<TGroupId>& ids) {
+            for (const TGroupId& groupId : ids) {
+                if (auto it = Groups.find(groupId); it != Groups.end()) {
+                    it->second.RecalculatePercentiles();
+                    UpdatedGroupIds.insert(groupId);
+                }
+            }
         }
     };
 

@@ -690,9 +690,11 @@ namespace NKikimr::NBsController {
         void TBlobStorageController::CommitSelfHealUpdates(TConfigState& state) {
             auto ev = std::make_unique<TEvControllerNotifyGroupChange>();
             auto sh = MakeHolder<TEvControllerUpdateSelfHealInfo>();
+            TSet<TGroupId> statProcessorGroupIds;
 
             for (auto&& [base, overlay] : state.Groups.Diff()) {
                 const TGroupId groupId = overlay->first;
+                statProcessorGroupIds.insert(groupId);
                 if (!overlay->second) { // item was deleted, drop it from the cache
                     const ui32 erased = GroupLookup.erase(groupId);
                     Y_ABORT_UNLESS(erased);
@@ -718,7 +720,6 @@ namespace NKikimr::NBsController {
                     if (overlay->second->VDisksInGroup) {
                         sh->GroupsToUpdate[groupId].emplace();
                     }
-                    ev->Created.push_back(groupId);
                 }
             }
             for (auto&& [base, overlay] : state.PDisks.Diff()) {
@@ -738,7 +739,21 @@ namespace NKikimr::NBsController {
                 }
             }
 
-            if (ev->Created || ev->Deleted) {
+            for (auto&& [base, overlay] : state.VSlots.Diff()) {
+                if (base) {
+                    statProcessorGroupIds.insert(base->second->GroupId);
+                }
+                if (overlay->second) {
+                    statProcessorGroupIds.insert(overlay->second->GroupId);
+                }
+            }
+            for (TGroupId groupId : statProcessorGroupIds) {
+                if (const TGroupInfo *group = state.Groups.Find(groupId)) {
+                    AddStatProcessorGroupUpdate(*ev, *group);
+                }
+            }
+
+            if (ev->Updated || ev->Deleted) {
                 state.StatProcessorOutbox.push_back(std::move(ev));
             }
             if (sh->GroupsToUpdate) {

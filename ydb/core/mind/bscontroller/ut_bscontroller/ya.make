@@ -11,6 +11,7 @@ ENDIF()
 
 SRCS(
     main.cpp
+    stat_processor_ut.cpp
 )
 
 PEERDIR(
@@ -22,6 +23,7 @@ PEERDIR(
     ydb/core/protos
     ydb/core/testlib/default
     ydb/core/testlib/basics
+    ydb/core/util/actorsys_test
 )
 
 YQL_LAST_ABI_VERSION()
