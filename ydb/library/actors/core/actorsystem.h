@@ -304,6 +304,8 @@ namespace NActors {
 
         TActorId LookupLocalService(const TActorId& x) const;
         TActorId RegisterLocalService(const TActorId& serviceId, const TActorId& actorId);
+        // Removes the mapping only when it still points to actorId, so a terminating actor can't erase its replacement.
+        bool UnregisterLocalService(const TActorId& serviceId, const TActorId& actorId);
 
         TInstant Timestamp() const {
             return TInstant::MicroSeconds(RelaxedLoad(&CurrentTimestamp));

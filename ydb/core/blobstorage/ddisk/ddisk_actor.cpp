@@ -6,6 +6,7 @@
 #include <ydb/core/blobstorage/base/common_latency_hist_bounds.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include <ydb/core/util/stlog.h>
+#include <ydb/library/actors/core/actorsystem.h>
 
 #if defined(__linux__)
 #include <unistd.h>
@@ -407,6 +408,10 @@ namespace {
             UringRouter.reset();
         }
 #endif
+        const TActorId serviceId = IsPersistentBufferActor
+            ? MakeBlobStoragePersistentBufferId(SelfId().NodeId(), BaseInfo.PDiskId, BaseInfo.VDiskSlotId)
+            : MakeBlobStorageDDiskId(SelfId().NodeId(), BaseInfo.PDiskId, BaseInfo.VDiskSlotId);
+        TActivationContext::ActorSystem()->UnregisterLocalService(serviceId, SelfId());
         CountersBase->RemoveSubgroupChain(CountersChain);
         TActorBootstrapped::PassAway();
     }

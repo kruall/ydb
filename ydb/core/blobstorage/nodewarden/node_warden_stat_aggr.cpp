@@ -29,7 +29,9 @@ void TNodeWarden::Handle(TEvGroupStatReport::TPtr ev) {
     TActorId vdiskServiceId = msg->GetVDiskServiceId();
 
     TGroupStat stat;
-    if (RunningVDiskServiceIds.count(vdiskServiceId) && msg->GetStat(stat)) {
+    const auto it = RunningAggregators.find(vdiskServiceId);
+    if (it != RunningAggregators.end() && it->second.ActorId == ev->Sender &&
+            it->second.GroupId == msg->GetGroupId() && msg->GetStat(stat)) {
         PerAggregatorInfo[vdiskServiceId] = TAggregatorInfo{
             msg->GetGroupId(),
             std::move(stat)
@@ -38,18 +40,21 @@ void TNodeWarden::Handle(TEvGroupStatReport::TPtr ev) {
 }
 
 void TNodeWarden::StartAggregator(const TActorId& vdiskServiceId, ui32 groupId) {
-    if (RunningVDiskServiceIds.emplace(vdiskServiceId).second) {
+    if (!RunningAggregators.contains(vdiskServiceId)) {
         const TActorId groupStatAggregatorId = MakeGroupStatAggregatorId(vdiskServiceId);
         const TActorId actorId = Register(CreateGroupStatAggregatorActor(groupId, vdiskServiceId),
             TMailboxType::Revolving, AppData()->SystemPoolId);
         TActivationContext::ActorSystem()->RegisterLocalService(groupStatAggregatorId, actorId);
+        const auto [_, inserted] = RunningAggregators.emplace(vdiskServiceId,
+            TRunningAggregatorInfo{actorId, groupId});
+        Y_ABORT_UNLESS(inserted);
     }
 }
 
 void TNodeWarden::StopAggregator(const TActorId& vdiskServiceId) {
-    if (RunningVDiskServiceIds.erase(vdiskServiceId)) {
-        const TActorId groupStatAggregatorId = MakeGroupStatAggregatorId(vdiskServiceId);
-        TActivationContext::Send(new IEventHandle(TEvents::TSystem::Poison, 0, groupStatAggregatorId, {}, nullptr, 0));
-        PerAggregatorInfo.erase(groupStatAggregatorId);
+    if (auto node = RunningAggregators.extract(vdiskServiceId)) {
+        TActivationContext::Send(new IEventHandle(
+            TEvents::TSystem::Poison, 0, node.mapped().ActorId, {}, nullptr, 0));
+        PerAggregatorInfo.erase(vdiskServiceId);
     }
 }

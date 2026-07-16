@@ -28,6 +28,7 @@
 #include <ydb/core/base/blobstorage_common.h>
 #include <ydb/library/wilson_ids/wilson.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
+#include <ydb/library/actors/core/actorsystem.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <ydb/library/actors/wilson/wilson_span.h>
@@ -2366,6 +2367,9 @@ namespace NKikimr {
             DisconnectClients(ctx);
             ActiveActors.KillAndClear(ctx);
             VDiskCountersBase->RemoveSubgroupChain(CountersChain);
+            TActivationContext::ActorSystem()->UnregisterLocalService(
+                MakeBlobStorageVDiskID(SelfId().NodeId(), Config->BaseInfo.PDiskId, Config->BaseInfo.VDiskSlotId),
+                SelfId());
             TActivationContext::Send(new IEventHandle(TEvents::TSystem::Gone, 0,
                 MakeBlobStorageNodeWardenID(SelfId().NodeId()), SelfId(), nullptr, 0));
             TActorBootstrapped::PassAway();

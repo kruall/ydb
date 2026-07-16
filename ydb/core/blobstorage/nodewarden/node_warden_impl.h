@@ -396,7 +396,12 @@ namespace NKikimr::NStorage {
             TGroupStat Stat;
         };
 
-        TSet<TActorId> RunningVDiskServiceIds;
+        struct TRunningAggregatorInfo {
+            TActorId ActorId;
+            ui32 GroupId;
+        };
+
+        TMap<TActorId, TRunningAggregatorInfo> RunningAggregators;
         TMap<TActorId, TAggregatorInfo> PerAggregatorInfo;
 
         void ReportLatencies();

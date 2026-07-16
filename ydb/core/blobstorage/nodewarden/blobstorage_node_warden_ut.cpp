@@ -1214,6 +1214,58 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
         Y_UNUSED(response);
     }
 
+    CUSTOM_UNIT_TEST(TestAggregatorRestartCleansStateAndKeepsNewService) {
+        TTestActorSystem runtime(1);
+        runtime.Start();
+
+        TIntrusivePtr<TNodeWardenConfig> config(
+            new TNodeWardenConfig(static_cast<IPDiskServiceFactory*>(new TRealPDiskServiceFactory())));
+        const TActorId nodeWardenId = runtime.Register(CreateBSNodeWarden(config.Release()), 1);
+        const ui32 nodeId = 1;
+        const ui32 pdiskId = 2001;
+        const ui32 vdiskSlotId = 3;
+        const ui32 groupId = 100500;
+        const TActorId vdiskServiceId = MakeBlobStorageVDiskID(nodeId, pdiskId, vdiskSlotId);
+        const TActorId aggregatorServiceId = MakeGroupStatAggregatorId(vdiskServiceId);
+
+        runtime.WrapInActorContext(nodeWardenId, [&](IActor *actor) {
+            auto& nodeWarden = *dynamic_cast<NStorage::TNodeWarden*>(actor);
+            nodeWarden.StartAggregator(vdiskServiceId, groupId);
+            nodeWarden.PerAggregatorInfo.emplace(vdiskServiceId,
+                NStorage::TNodeWarden::TAggregatorInfo{groupId, {}});
+        });
+        const TActorId oldAggregatorId = runtime.GetNode(nodeId)->ActorSystem->LookupLocalService(aggregatorServiceId);
+        UNIT_ASSERT(oldAggregatorId);
+
+        runtime.WrapInActorContext(nodeWardenId, [&](IActor *actor) {
+            auto& nodeWarden = *dynamic_cast<NStorage::TNodeWarden*>(actor);
+            nodeWarden.StopAggregator(vdiskServiceId);
+            UNIT_ASSERT(!nodeWarden.PerAggregatorInfo.contains(vdiskServiceId));
+            nodeWarden.StartAggregator(vdiskServiceId, groupId + 1);
+        });
+        const TActorId newAggregatorId = runtime.GetNode(nodeId)->ActorSystem->LookupLocalService(aggregatorServiceId);
+        UNIT_ASSERT(newAggregatorId);
+        UNIT_ASSERT_UNEQUAL(newAggregatorId, oldAggregatorId);
+
+        runtime.Sim([&] { return runtime.HasImmediateEvents(); });
+        UNIT_ASSERT_VALUES_EQUAL(runtime.GetNode(nodeId)->ActorSystem->LookupLocalService(aggregatorServiceId),
+            newAggregatorId);
+
+        TGroupStat staleStat;
+        staleStat.Update(TGroupStat::EKind::PUT_TABLET_LOG, TDuration::MilliSeconds(1), TInstant::Now());
+        runtime.Send(new IEventHandle(nodeWardenId, oldAggregatorId,
+            new TEvGroupStatReport(vdiskServiceId, groupId, staleStat)), nodeId);
+        runtime.Sim([&] { return runtime.HasImmediateEvents(); });
+        runtime.WrapInActorContext(nodeWardenId, [&](IActor *actor) {
+            auto& nodeWarden = *dynamic_cast<NStorage::TNodeWarden*>(actor);
+            UNIT_ASSERT(!nodeWarden.PerAggregatorInfo.contains(vdiskServiceId));
+            nodeWarden.StopAggregator(vdiskServiceId);
+        });
+        runtime.Sim([&] { return runtime.HasImmediateEvents(); });
+
+        UNIT_ASSERT(!runtime.GetNode(nodeId)->ActorSystem->LookupLocalService(aggregatorServiceId));
+    }
+
     CUSTOM_UNIT_TEST(TestInferPDiskSlotCountExplicitConfig) {
         TTestBasicRuntime runtime(1, false);
         TActorId realNodeWarden = SetupNodeWardenOnly(runtime);

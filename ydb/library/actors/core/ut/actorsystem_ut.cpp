@@ -41,5 +41,12 @@ Y_UNIT_TEST_SUITE(TActorSystemTest) {
         UNIT_ASSERT(prevActorId);
         UNIT_ASSERT_EQUAL(prevActorId, actorA);
         UNIT_ASSERT_EQUAL(runtime->GetLocalServiceId(myServiceId), actorB);
+
+        UNIT_ASSERT(!runtime->GetActorSystem(0)->UnregisterLocalService(myServiceId, actorA));
+        UNIT_ASSERT_EQUAL(runtime->GetLocalServiceId(myServiceId), actorB);
+
+        UNIT_ASSERT(runtime->GetActorSystem(0)->UnregisterLocalService(myServiceId, actorB));
+        UNIT_ASSERT(!runtime->GetLocalServiceId(myServiceId));
+        UNIT_ASSERT(!runtime->GetActorSystem(0)->UnregisterLocalService(myServiceId, actorB));
     }
 }

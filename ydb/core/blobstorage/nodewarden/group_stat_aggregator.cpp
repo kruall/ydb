@@ -1,5 +1,6 @@
 #include "group_stat_aggregator.h"
 #include <ydb/core/base/group_stat.h>
+#include <ydb/library/actors/core/actorsystem.h>
 
 using namespace NKikimr;
 using namespace NActors;
@@ -75,6 +76,12 @@ namespace {
             const TActorId nodeWardenId = MakeBlobStorageNodeWardenID(SelfId().NodeId());
             Send(nodeWardenId, new TEvGroupStatReport(VDiskServiceId, GroupId, Accum));
             Schedule(ReportPeriod, new TEvents::TEvWakeup);
+        }
+
+        void PassAway() override {
+            TActivationContext::ActorSystem()->UnregisterLocalService(
+                MakeGroupStatAggregatorId(VDiskServiceId), SelfId());
+            TActorBootstrapped::PassAway();
         }
 
         STRICT_STFUNC(StateFunc, {

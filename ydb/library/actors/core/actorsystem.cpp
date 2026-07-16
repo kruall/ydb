@@ -114,6 +114,14 @@ namespace NActors {
         TActorId LookupLocal(const TActorId& x) {
             return LocalMap.Find(x);
         }
+
+        bool UnregisterLocalService(const TActorId& serviceId, const TActorId& actorId) {
+            TTicketLock::TGuard guard(&Lock);
+            if (LocalMap.Find(serviceId) != actorId) {
+                return false;
+            }
+            return LocalMap.Erase(serviceId);
+        }
     };
 
     TRdmaAllocatorWithFallback::TRdmaAllocatorWithFallback(std::shared_ptr<NInterconnect::NRdma::IMemPool>  memPool) noexcept
@@ -465,6 +473,10 @@ namespace NActors {
     TActorId TActorSystem::RegisterLocalService(const TActorId& serviceId, const TActorId& actorId) {
         // TODO: notify old actor about demotion
         return ServiceMap->RegisterLocalService(serviceId, actorId);
+    }
+
+    bool TActorSystem::UnregisterLocalService(const TActorId& serviceId, const TActorId& actorId) {
+        return ServiceMap->UnregisterLocalService(serviceId, actorId);
     }
 
     void TActorSystem::Start() {
