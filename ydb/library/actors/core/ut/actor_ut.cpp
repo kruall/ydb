@@ -924,6 +924,143 @@ Y_UNIT_TEST_SUITE(TestActorLiveness) {
     }
 }
 
+Y_UNIT_TEST_SUITE(MailboxProcessingFinished) {
+    using EFinishReason = TEvents::TEvMailboxProcessingFinished::EReason;
+    using TActorBenchmark = NActors::NTests::TActorBenchmark<>;
+
+    struct TResult {
+        EFinishReason Reason = EFinishReason::QueueEmpty;
+        ui32 ExecutedEvents = 0;
+        ui64 ElapsedCycles = 0;
+    };
+
+    class TObserverActor : public TActorBootstrapped<TObserverActor> {
+    public:
+        TObserverActor(TResult& result, TThreadParkPad& done)
+            : Result(result)
+            , Done(done)
+        {}
+
+        void Bootstrap() {
+            SetSystemFlag(ESystemFlag::MailboxProcessingFinished);
+            Become(&TThis::StateWork);
+        }
+
+        STFUNC(StateWork) {
+            switch (ev->GetTypeRewrite()) {
+                hFunc(TEvents::TEvMailboxProcessingFinished, Handle);
+            }
+        }
+
+        void Handle(TEvents::TEvMailboxProcessingFinished::TPtr& ev) {
+            Result.Reason = ev->Get()->Reason;
+            Result.ExecutedEvents = ev->Get()->ExecutedEvents;
+            Result.ElapsedCycles = ev->Get()->ElapsedCycles;
+            Done.Unpark();
+            PassAway();
+        }
+
+    private:
+        TResult& Result;
+        TThreadParkPad& Done;
+    };
+
+    class TPersistentObserverActor : public TActorBootstrapped<TPersistentObserverActor> {
+    public:
+        TPersistentObserverActor(ui32& notifications, TThreadParkPad& done)
+            : Notifications(notifications)
+            , Done(done)
+        {}
+
+        void Bootstrap() {
+            SetSystemFlag(ESystemFlag::MailboxProcessingFinished);
+            Become(&TThis::StateWork);
+        }
+
+        STFUNC(StateWork) {
+            switch (ev->GetTypeRewrite()) {
+                hFunc(TEvents::TEvMailboxProcessingFinished, Handle);
+                hFunc(TEvents::TEvWakeup, Handle);
+            }
+        }
+
+        void Handle(TEvents::TEvMailboxProcessingFinished::TPtr&) {
+            ++Notifications;
+            if (Notifications == 1) {
+                Send(SelfId(), new TEvents::TEvWakeup(1));
+            } else if (Notifications == 2) {
+                ClearSystemFlag(ESystemFlag::MailboxProcessingFinished);
+                Send(SelfId(), new TEvents::TEvWakeup(2));
+            } else {
+                Done.Unpark();
+                PassAway();
+            }
+        }
+
+        void Handle(TEvents::TEvWakeup::TPtr& ev) {
+            if (ev->Get()->Tag == 2) {
+                Send(SelfId(), new TEvents::TEvWakeup(3));
+            } else if (ev->Get()->Tag == 3) {
+                Done.Unpark();
+                PassAway();
+            }
+        }
+
+    private:
+        ui32& Notifications;
+        TThreadParkPad& Done;
+    };
+
+    TResult Run(bool activateEveryEvent) {
+        auto setup = TActorBenchmark::GetActorSystemSetup();
+        TActorBenchmark::AddBasicPool(setup, 1, activateEveryEvent, false);
+
+        TActorSystem actorSystem(setup);
+        actorSystem.Start();
+
+        TResult result;
+        TThreadParkPad done;
+        actorSystem.Register(new TObserverActor(result, done), TMailboxType::HTSwap, 0);
+
+        done.Park();
+        actorSystem.Stop();
+        return result;
+    }
+
+    Y_UNIT_TEST(NotifiesWhenQueueIsEmpty) {
+        const TResult result = Run(false);
+
+        UNIT_ASSERT(result.Reason == EFinishReason::QueueEmpty);
+        UNIT_ASSERT_VALUES_EQUAL(result.ExecutedEvents, 1);
+        UNIT_ASSERT_C(result.ElapsedCycles > 0, "Expected non-zero mailbox processing time");
+    }
+
+    Y_UNIT_TEST(NotifiesWhenEventCountLimitIsReached) {
+        const TResult result = Run(true);
+
+        UNIT_ASSERT(result.Reason == EFinishReason::EventCountLimitReached);
+        UNIT_ASSERT_VALUES_EQUAL(result.ExecutedEvents, 1);
+        UNIT_ASSERT_C(result.ElapsedCycles > 0, "Expected non-zero mailbox processing time");
+    }
+
+    Y_UNIT_TEST(SystemFlagStaysSetUntilExplicitlyCleared) {
+        auto setup = TActorBenchmark::GetActorSystemSetup();
+        TActorBenchmark::AddBasicPool(setup, 1, true, false);
+
+        TActorSystem actorSystem(setup);
+        actorSystem.Start();
+
+        ui32 notifications = 0;
+        TThreadParkPad done;
+        actorSystem.Register(new TPersistentObserverActor(notifications, done), TMailboxType::HTSwap, 0);
+
+        done.Park();
+        actorSystem.Stop();
+
+        UNIT_ASSERT_VALUES_EQUAL(notifications, 2);
+    }
+}
+
 Y_UNIT_TEST_SUITE(TestThreadContextQueueTimestamps) {
     using namespace NThreading;
 
