@@ -14,6 +14,9 @@ ENDIF()
 
 PEERDIR(
     ydb/library/actors/core
+    ydb/library/actors/protos
+    library/cpp/logger
+    library/cpp/monlib/dynamic_counters
     library/cpp/threading/future
 )
 

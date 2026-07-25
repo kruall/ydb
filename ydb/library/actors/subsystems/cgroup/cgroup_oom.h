@@ -59,6 +59,9 @@ namespace NActors {
         ui32 ExecutorPoolId = 0;
         TDuration PollPeriod = TDuration::Seconds(1);
 
+        // Zero disables actor subscriber liveness checks.
+        TDuration SubscriberLivenessCheckInterval = TDuration::Hours(1);
+
         // An empty optional disables the corresponding threshold.
         std::optional<double> MemoryUsageThreshold = 0.9;
         std::optional<ui64> AvailableBytesThreshold;

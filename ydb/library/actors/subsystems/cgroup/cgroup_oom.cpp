@@ -10,6 +10,9 @@
 #include <ydb/library/actors/core/event_local.h>
 #include <ydb/library/actors/core/events.h>
 #include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/actors/core/log.h>
+#include <ydb/library/actors/helpers/actor_liveness_checker.h>
+#include <ydb/library/actors/protos/services_common.pb.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/hash_set.h>
@@ -37,6 +40,8 @@ namespace NActors {
             EvUnsubscribeCallback,
             EvSubscribeActor,
             EvUnsubscribeActor,
+            EvCheckActorSubscribersLiveness,
+            EvActorSubscriberLivenessCheckFinished,
         };
 
         struct TEvPoll : TEventLocal<TEvPoll, EvPoll> {
@@ -82,6 +87,50 @@ namespace NActors {
             }
         };
 
+        struct TEvCheckActorSubscribersLiveness
+            : TEventLocal<TEvCheckActorSubscribersLiveness, EvCheckActorSubscribersLiveness>
+        {
+        };
+
+        struct TEvActorSubscriberLivenessCheckFinished
+            : TEventLocal<
+                TEvActorSubscriberLivenessCheckFinished,
+                EvActorSubscriberLivenessCheckFinished>
+        {
+        };
+
+        class TCGroupOomSubscriberLivenessChecker
+            : public TActorLivenessChecker
+        {
+        public:
+            TCGroupOomSubscriberLivenessChecker(
+                    TActorId subscriptionOwner,
+                    TVector<TActorLivenessCheckTarget> subscribers)
+                : TActorLivenessChecker(std::move(subscribers))
+                , SubscriptionOwner(subscriptionOwner)
+            {
+            }
+
+        private:
+            void OnDead(const TActorLivenessCheckTarget& target) override {
+                ++DeadSubscriberCount;
+                Send(SubscriptionOwner, new TEvUnsubscribeActor(target.ActorId));
+            }
+
+            void OnFinish() override {
+                if (DeadSubscriberCount) {
+                    LOG_WARN_S(*TlsActivationContext, NActorsServices::GLOBAL,
+                        "CGroup OOM subscriber liveness check removed "
+                            << DeadSubscriberCount << " dead actor subscription(s)");
+                }
+                Send(SubscriptionOwner, new TEvActorSubscriberLivenessCheckFinished());
+            }
+
+        private:
+            const TActorId SubscriptionOwner;
+            ui64 DeadSubscriberCount = 0;
+        };
+
         class TCGroupOomActor : public TActorBootstrapped<TCGroupOomActor> {
         public:
             TCGroupOomActor(
@@ -95,6 +144,7 @@ namespace NActors {
             void Bootstrap() {
                 Become(&TThis::StateWork);
                 Send(SelfId(), new TEvPoll());
+                ScheduleActorSubscriberLivenessCheck();
             }
 
             STRICT_STFUNC(StateWork,
@@ -104,6 +154,8 @@ namespace NActors {
                 hFunc(TEvUnsubscribeCallback, Handle)
                 hFunc(TEvSubscribeActor, Handle)
                 hFunc(TEvUnsubscribeActor, Handle)
+                hFunc(TEvCheckActorSubscribersLiveness, Handle)
+                hFunc(TEvActorSubscriberLivenessCheckFinished, Handle)
                 cFunc(TEvents::TSystem::Poison, PassAway)
             )
 
@@ -146,6 +198,37 @@ namespace NActors {
 
             void Handle(TEvUnsubscribeActor::TPtr& ev) {
                 ActorSubscribers.erase(ev->Get()->ActorId);
+            }
+
+            void Handle(TEvCheckActorSubscribersLiveness::TPtr&) {
+                if (ActorSubscribers.empty()) {
+                    return ScheduleActorSubscriberLivenessCheck();
+                }
+
+                TVector<TActorLivenessCheckTarget> subscribers;
+                subscribers.reserve(ActorSubscribers.size());
+                for (const TActorId& actorId : ActorSubscribers) {
+                    subscribers.push_back({
+                        .ActorId = actorId,
+                    });
+                }
+                TActivationContext::Register(
+                    new TCGroupOomSubscriberLivenessChecker(
+                        SelfId(),
+                        std::move(subscribers)),
+                    SelfId());
+            }
+
+            void Handle(TEvActorSubscriberLivenessCheckFinished::TPtr&) {
+                ScheduleActorSubscriberLivenessCheck();
+            }
+
+            void ScheduleActorSubscriberLivenessCheck() {
+                if (Config.SubscriberLivenessCheckInterval != TDuration::Zero()) {
+                    Schedule(
+                        Config.SubscriberLivenessCheckInterval,
+                        new TEvCheckActorSubscribersLiveness());
+                }
             }
 
             void Evaluate(TCGroupMemoryStatsPtr stats) {

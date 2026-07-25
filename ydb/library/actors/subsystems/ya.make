@@ -21,6 +21,7 @@ SRCS(
 
 PEERDIR(
     ydb/library/actors/core
+    ydb/library/actors/helpers
     ydb/library/actors/protos
     ydb/library/actors/util
 )
