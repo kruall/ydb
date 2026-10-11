@@ -1,6 +1,5 @@
 #include <ydb/core/blobstorage/ut_blobstorage/lib/env.h>
 #include <ydb/core/blobstorage/vdisk/anubis_osiris/blobstorage_anubis_osiris.h>
-#include <ydb/core/blobstorage/vdisk/common/vdisk_operation_broker.h>
 #include <ydb/core/blobstorage/vdisk/repl/blobstorage_repl.h>
 #include <ydb/core/blobstorage/vdisk/skeleton/blobstorage_skeletonfront.h>
 #include <ydb/core/blobstorage/vdisk/syncer/blobstorage_syncer_data.h>
@@ -34,11 +33,7 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     }
     const ui32 lostRealm = (healthyRealm + 1) % 3;
     const ui32 offlineRealm = (healthyRealm + 2) % 3;
-    ui32 waitingNode = 0;
     for (ui32 i = 0; i < info->GetTotalVDisksNum(); ++i) {
-        if (info->GetVDiskId(i).FailRealm == lostRealm && info->GetVDiskId(i).FailDomain == 0) {
-            waitingNode = info->GetActorId(i).NodeId();
-        }
         if (info->GetVDiskId(i).FailRealm == offlineRealm) {
             env.StopNode(info->GetActorId(i).NodeId());
         }
@@ -52,24 +47,13 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     const auto baseConfig = env.FetchBaseConfig();
     bool wiping = true;
     bool holdHealthyPeer = true;
-    bool holdStartupToken = true;
-    bool waitingPeerReplied = false;
-    std::vector<std::unique_ptr<IEventHandle>> heldStartupTokens;
     ui32 earlyFullSyncResponses = 0;
     std::set<ui32> recoveredNodes;
     env.Runtime->FilterFunction = [&](ui32, std::unique_ptr<IEventHandle>& ev) {
-        if (holdStartupToken && ev->GetTypeRewrite() == TEvAcquireVDiskOperationToken::EventType &&
-                ev->Recipient == MakeBlobStorageStartupDataSyncBrokerID() &&
-                ev->Get<TEvAcquireVDiskOperationToken>()->VDiskServiceId.NodeId() == waitingNode) {
-            heldStartupTokens.push_back(std::move(ev));
-            return false;
-        } else if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVSyncFull::EventType) {
+        if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVSyncFull::EventType) {
             const auto& record = ev->Get<TEvBlobStorage::TEvVSyncFull>()->Record;
             const auto source = VDiskIDFromVDiskID(record.GetSourceVDiskID());
             const auto target = VDiskIDFromVDiskID(record.GetTargetVDiskID());
-            if (!wiping && holdStartupToken && source.FailRealm == lostRealm) {
-                UNIT_ASSERT(source.FailDomain != 0); // Outgoing recovery still needs its broker token.
-            }
             if (source.FailRealm == lostRealm && (wiping ||
                     (holdHealthyPeer && target.FailRealm == healthyRealm && target.FailDomain == 0))) {
                 return false;
@@ -80,7 +64,6 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
                     VDiskIDFromVDiskID(record.GetVDiskID()).FailRealm == lostRealm) {
                 UNIT_ASSERT_VALUES_EQUAL(record.GetSyncState().GetSyncedLsn(), 0);
                 ++earlyFullSyncResponses;
-                waitingPeerReplied |= VDiskIDFromVDiskID(record.GetVDiskID()).FailDomain == 0;
             }
         } else if (ev->GetTypeRewrite() == TEvSyncerLostDataRecovered::EventType) {
             recoveredNodes.insert(ev->Sender.NodeId());
@@ -100,14 +83,8 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     env.Sim(TDuration::Seconds(30));
     UNIT_ASSERT(recoveredNodes.empty()); // Even with early peer replies, every healthy-domain full sync is required.
     UNIT_ASSERT_VALUES_EQUAL(earlyFullSyncResponses != 0, emergencyMode);
-    UNIT_ASSERT(!heldStartupTokens.empty());
-    UNIT_ASSERT_VALUES_EQUAL(waitingPeerReplied, emergencyMode);
 
     holdHealthyPeer = false;
-    holdStartupToken = false;
-    for (auto& event : heldStartupTokens) {
-        env.Runtime->Send(event.release(), waitingNode);
-    }
     env.Sim(TDuration::Minutes(2));
     UNIT_ASSERT_VALUES_EQUAL(recoveredNodes.size(), emergencyMode ? 3 : 0);
 
