@@ -47,6 +47,7 @@ namespace NKikimr {
         // Target VDiskId and ActorId are reconfigurable
         TVDiskID TargetVDiskId;
         TActorId TargetActorId;
+        bool CompleteSnapshot = false;
 
         void Bootstrap(const TActorContext &ctx) {
             YDB_LOG_DEBUG_CTX(ctx, VDISKP(SyncerCtx->VCtx->VDiskLogPrefix, "TSyncerRLDFullSyncProxyActor(%s): START", TargetVDiskId.ToString().data()));
@@ -116,6 +117,7 @@ namespace NKikimr {
         ////////////////////////////////////////////////////////////////////////
         void Commit(const TActorContext &ctx, std::unique_ptr<TSyncerJobTask> task) {
             YDB_LOG_DEBUG_CTX(ctx, VDISKP(SyncerCtx->VCtx->VDiskLogPrefix, "TSyncerRLDFullSyncProxyActor(%s): Commit", TargetVDiskId.ToString().data()));
+            CompleteSnapshot = !SyncerCtx->Config->EmergencyRecoveryMode || task->GetCurrent().SyncState.SyncedLsn != 0;
             auto msg = TEvSyncerCommit::Remote(task->VDiskId, task->GetCurrent());
             ctx.Send(CommitterId, msg.release());
             Become(&TThis::WaitForCommitStateFunc);
@@ -124,7 +126,7 @@ namespace NKikimr {
         void Handle(TEvSyncerCommitDone::TPtr &ev, const TActorContext &ctx) {
             Y_UNUSED(ev);
             YDB_LOG_DEBUG_CTX(ctx, VDISKP(SyncerCtx->VCtx->VDiskLogPrefix, "TSyncerRLDFullSyncProxyActor(%s): FINISH", TargetVDiskId.ToString().data()));
-            ctx.Send(NotifyId, new TEvSyncerFullSyncedWithPeer(TargetVDiskId));
+            ctx.Send(NotifyId, new TEvSyncerFullSyncedWithPeer(TargetVDiskId, CompleteSnapshot));
             Die(ctx);
         }
 

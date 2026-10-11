@@ -3,6 +3,7 @@
 #include "blobstorage_syncfull.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_response.h>
 #include <ydb/core/blobstorage/vdisk/hullop/blobstorage_hull.h>
+#include <ydb/core/blobstorage/vdisk/syncer/blobstorage_syncer_data.h>
 
 #define YDB_LOG_THIS_FILE_COMPONENT BS_SYNCJOB
 
@@ -25,8 +26,8 @@ namespace NKikimr {
         std::shared_ptr<THull> Hull;
         std::shared_ptr<NMonGroup::TVDiskIFaceGroup> IFaceMonGroup;
         std::shared_ptr<NMonGroup::TFullSyncGroup> FullSyncGroup;
-        const ui64 DbBirthLsn;
-        const bool RecoveringLostData;
+        ui64 DbBirthLsn;
+        bool RecoveringLostData;
 
         using TSessionKey = std::pair<TVDiskID, TVDiskID>; // { SourceVDisk, TargetVDisk }
         THashMap<TSessionKey, TActorId> UnorderedDataFullSyncSessions;
@@ -279,11 +280,16 @@ namespace NKikimr {
             TerminateAllUnorderedDataSessions();
         }
 
+        void Handle(TEvSyncGuidRecoveryDone::TPtr& ev) {
+            DbBirthLsn = ev->Get()->DbBirthLsn;
+            RecoveringLostData = false;
+        }
 
         STRICT_STFUNC(StateFunc,
             hFunc(TEvents::TEvGone, Handle)
             cFunc(TEvents::TEvPoisonPill::EventType, HandlePoison)
             hFunc(TEvVGenerationChange, Handle)
+            hFunc(TEvSyncGuidRecoveryDone, Handle)
             hFunc(TEvBlobStorage::TEvVSyncFull, Handle)
         )
 

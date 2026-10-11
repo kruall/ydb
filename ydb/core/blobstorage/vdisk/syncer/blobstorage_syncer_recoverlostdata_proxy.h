@@ -24,9 +24,12 @@ namespace NKikimr {
     {
         // Fully synced with this vdisk
         const TVDiskIdShort VDiskId;
+        // Emergency full sync uses LSN 0 for a snapshot taken before recovery completes.
+        const bool CompleteSnapshot;
 
-        TEvSyncerFullSyncedWithPeer(const TVDiskIdShort &vdisk)
+        TEvSyncerFullSyncedWithPeer(const TVDiskIdShort &vdisk, bool completeSnapshot)
             : VDiskId(vdisk)
+            , CompleteSnapshot(completeSnapshot)
         {}
     };
 

@@ -797,11 +797,6 @@ namespace NKikimr {
                 auto node = isPhantom.extract(id);
                 Y_VERIFY_S(node, ReplCtx->VCtx->VDiskLogPrefix);
                 auto [phantom, looksLikePhantom] = node.mapped();
-                if (ReplCtx->VDiskCfg->EmergencyRecoveryMode) {
-                    // Retry as an ordinary unrecovered blob; do not delete it or report PhantomsOnly to BSC.
-                    phantom = false;
-                    looksLikePhantom = false;
-                }
                 RecoveryMachine->ProcessPhantomBlob(partSet, parts, phantom, looksLikePhantom, ingress, *this);
                 if (phantom) {
                     Phantoms.push_back(id);
@@ -848,6 +843,11 @@ namespace NKikimr {
         }
 
         void AddPhantomBlobRecord(const TRecoveryMachine::TPartSet& item, TIngress ingress, NMatrix::TVectorType partsToRecover) {
+            if (ReplCtx->VDiskCfg->EmergencyRecoveryMode) {
+                // Keep unrecovered accounting without issuing a phantom-validation Get whose result we cannot use.
+                RecoveryMachine->ProcessPhantomBlob(item, partsToRecover, false, false, ingress, *this);
+                return;
+            }
             YDB_LOG_INFO(VDISKP(ReplCtx->VCtx->VDiskLogPrefix, "Sending phantom validation query"),
                 {"marker", "BSVR33"},
                 {"groupId", GInfo->GroupID},

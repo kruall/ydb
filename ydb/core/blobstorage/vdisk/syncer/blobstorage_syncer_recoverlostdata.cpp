@@ -46,20 +46,26 @@ namespace NKikimr {
     public:
         TSyncFullRecoverState(const TString& logPrefix,
                               const TVDiskIdShort &self,
-                              const std::shared_ptr<TBlobStorageGroupInfo::TTopology> &top)
+                              const std::shared_ptr<TBlobStorageGroupInfo::TTopology> &top,
+                              bool emergencyRecoveryMode)
             : VDiskLogPrefix(logPrefix)
             , Neighbors(self, top)
             , QuorumTracker(self, top, false)
+            , CompleteSnapshots(top.get())
+            , EmergencyRecoveryMode(emergencyRecoveryMode)
             , Sublog(false, self.ToString() + ": ")
         {}
 
-        void FullSyncedWithPeer(const TVDiskIdShort &vdisk) {
+        void FullSyncedWithPeer(const TVDiskIdShort &vdisk, bool completeSnapshot) {
             Y_VERIFY_S(Neighbors[vdisk].VDiskIdShort == vdisk, VDiskLogPrefix);
 
             Sublog.Log() << "RESPONSE: vdisk# " << vdisk.ToString() << " full synced";
 
             Neighbors[vdisk].Get().FullSyncDone();
             QuorumTracker.Update(vdisk);
+            if (completeSnapshot) {
+                CompleteSnapshots |= TBlobStorageGroupInfo::TGroupVDisks(CompleteSnapshots.GetTopology(), vdisk);
+            }
         }
 
         void RunFullSync(std::function<void(TVDiskInfo<TPeerState>&)> func) {
@@ -79,13 +85,41 @@ namespace NKikimr {
         }
 
         bool GotQuorum() const {
-            return QuorumTracker.HasQuorum();
+            if (!QuorumTracker.HasQuorum()) {
+                return false;
+            }
+            if (!EmergencyRecoveryMode) {
+                return true;
+            }
+            const auto* top = CompleteSnapshots.GetTopology();
+            if (top->GetQuorumChecker().CheckQuorumForGroup(CompleteSnapshots)) {
+                return true;
+            }
+            if (QuorumTracker.Erasure != TBlobStorageGroupType::ErasureMirror3dc) {
+                return false;
+            }
+            // Partial peers may help the quorum only after we import a complete preserved realm.
+            // Otherwise two wiped realms can declare each other's empty indexes recovered.
+            for (const auto& realm : top->FailRealms) {
+                bool complete = true;
+                for (const auto& domain : realm.FailDomains) {
+                    for (const auto& disk : domain.VDisks) {
+                        complete &= CompleteSnapshots[disk.OrderNumber];
+                    }
+                }
+                if (complete) {
+                    return true;
+                }
+            }
+            return false;
         }
 
     private:
         const TString VDiskLogPrefix;
         NSync::TVDiskNeighbors<TPeerState> Neighbors;
         NSync::TQuorumTracker QuorumTracker;
+        TBlobStorageGroupInfo::TGroupVDisks CompleteSnapshots;
+        const bool EmergencyRecoveryMode;
         TSublog<> Sublog;
     };
 
@@ -155,7 +189,7 @@ namespace NKikimr {
         void Handle(TEvSyncerFullSyncedWithPeer::TPtr &ev, const TActorContext &ctx) {
             YDB_LOG_DEBUG_CTX(ctx, VDISKP(SyncerCtx->VCtx->VDiskLogPrefix, "TSyncerRecoverLostDataActor: TEvSyncerFullSyncedWithPeer"));
             auto *msg = ev->Get();
-            State.FullSyncedWithPeer(msg->VDiskId);
+            State.FullSyncedWithPeer(msg->VDiskId, msg->CompleteSnapshot);
             if (State.GotQuorum()) {
                 StopAllRunningProxy(ctx);
                 CallOsiris(ctx);
@@ -268,7 +302,8 @@ namespace NKikimr {
             : TActorBootstrapped<TSyncerRecoverLostDataActor>()
             , SyncerCtx(sc)
             , GInfo(info)
-            , State(SyncerCtx->VCtx->VDiskLogPrefix, SyncerCtx->VCtx->ShortSelfVDisk, SyncerCtx->VCtx->Top)
+            , State(SyncerCtx->VCtx->VDiskLogPrefix, SyncerCtx->VCtx->ShortSelfVDisk, SyncerCtx->VCtx->Top,
+                SyncerCtx->Config->EmergencyRecoveryMode)
             , CommitterId(committerId)
             , NotifyId(notifyId)
             , Guid(guid)

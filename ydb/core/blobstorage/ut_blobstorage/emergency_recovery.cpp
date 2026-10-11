@@ -2,19 +2,29 @@
 #include <ydb/core/blobstorage/vdisk/anubis_osiris/blobstorage_anubis_osiris.h>
 #include <ydb/core/blobstorage/vdisk/repl/blobstorage_repl.h>
 #include <ydb/core/blobstorage/vdisk/skeleton/blobstorage_skeletonfront.h>
+#include <ydb/core/blobstorage/vdisk/synclog/blobstorage_synclog_private_events.h>
 #include <ydb/core/blobstorage/vdisk/syncer/blobstorage_syncer_data.h>
 #include <ydb/core/blobstorage/vdisk/syncer/blobstorage_syncer_recoverlostdata.h>
 
 namespace {
 
-void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
+enum class ERecoveryScenario {
+    OfflineRealm,
+    TwoWipedRealms,
+    DelayedUnorderedSession,
+};
+
+void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false,
+        ERecoveryScenario scenario = ERecoveryScenario::OfflineRealm) {
     TEnvironmentSetup env({
         .NodeCount = 9,
         .Erasure = TBlobStorageGroupType::ErasureMirror3dc,
         .VDiskConfigPreprocessor = [=](TVDiskConfig& config) {
             config.EmergencyRecoveryMode = emergencyMode;
             config.EnableVDiskCooldownTimeout = false;
-            config.SyncJobTimeout = TDuration::Seconds(1);
+            config.RunAnubis = false;
+            config.SyncJobTimeout = scenario == ERecoveryScenario::DelayedUnorderedSession
+                ? TDuration::Max() : TDuration::Seconds(1);
             config.SyncerRLDRetryTimeout = TDuration::Seconds(1);
         },
         .EnablePhantomFlagStorage = unorderedData,
@@ -33,8 +43,12 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     }
     const ui32 lostRealm = (healthyRealm + 1) % 3;
     const ui32 offlineRealm = (healthyRealm + 2) % 3;
+    ui32 delayedSessionNode = 0;
     for (ui32 i = 0; i < info->GetTotalVDisksNum(); ++i) {
-        if (info->GetVDiskId(i).FailRealm == offlineRealm) {
+        if (info->GetVDiskId(i).FailRealm == lostRealm && info->GetVDiskId(i).FailDomain == 0) {
+            delayedSessionNode = info->GetActorId(i).NodeId();
+        }
+        if (scenario != ERecoveryScenario::TwoWipedRealms && info->GetVDiskId(i).FailRealm == offlineRealm) {
             env.StopNode(info->GetActorId(i).NodeId());
         }
     }
@@ -42,11 +56,22 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     const TString data(128, 'X');
     const TLogoBlobID id(5000, 1, 1, 0, data.size(), 0);
     env.PutBlob(groups.front(), id, data);
+    const ui64 blockedTablet = 6000;
+    const ui32 blockedGeneration = 7;
+    const auto blockEdge = env.Runtime->AllocateEdgeActor(1);
+    env.Runtime->WrapInActorContext(blockEdge, [&] {
+        SendToBSProxy(blockEdge, groups.front(), new TEvBlobStorage::TEvBlock(
+            blockedTablet, blockedGeneration, TInstant::Max()));
+    });
+    const auto blockReply = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvBlockResult>(blockEdge);
+    UNIT_ASSERT_VALUES_EQUAL(blockReply->Get()->Status, NKikimrProto::OK);
     env.Sim(TDuration::Seconds(30));
 
     const auto baseConfig = env.FetchBaseConfig();
     bool wiping = true;
     bool holdHealthyPeer = true;
+    bool holdSession = scenario == ERecoveryScenario::DelayedUnorderedSession;
+    std::vector<std::unique_ptr<IEventHandle>> heldSnapshotReplies;
     ui32 earlyFullSyncResponses = 0;
     std::set<ui32> recoveredNodes;
     env.Runtime->FilterFunction = [&](ui32, std::unique_ptr<IEventHandle>& ev) {
@@ -54,17 +79,25 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
             const auto& record = ev->Get<TEvBlobStorage::TEvVSyncFull>()->Record;
             const auto source = VDiskIDFromVDiskID(record.GetSourceVDiskID());
             const auto target = VDiskIDFromVDiskID(record.GetTargetVDiskID());
-            if (source.FailRealm == lostRealm && (wiping ||
-                    (holdHealthyPeer && target.FailRealm == healthyRealm && target.FailDomain == 0))) {
+            const bool recoveringSource = source.FailRealm == lostRealm ||
+                (scenario == ERecoveryScenario::TwoWipedRealms && source.FailRealm == offlineRealm);
+            const bool delayedHealthyPeer = target.FailRealm == healthyRealm &&
+                (scenario == ERecoveryScenario::TwoWipedRealms || target.FailDomain == 0);
+            if (recoveringSource && (wiping || (holdHealthyPeer && delayedHealthyPeer))) {
                 return false;
             }
         } else if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVSyncFullResult::EventType) {
             const auto& record = ev->Get<TEvBlobStorage::TEvVSyncFullResult>()->Record;
             if (!wiping && holdHealthyPeer && record.GetStatus() == NKikimrProto::OK &&
-                    VDiskIDFromVDiskID(record.GetVDiskID()).FailRealm == lostRealm) {
+                    VDiskIDFromVDiskID(record.GetVDiskID()).FailRealm != healthyRealm) {
                 UNIT_ASSERT_VALUES_EQUAL(record.GetSyncState().GetSyncedLsn(), 0);
                 ++earlyFullSyncResponses;
             }
+        } else if (holdSession && !wiping &&
+                ev->GetTypeRewrite() == NSyncLog::TEvPhantomFlagStorageGetSnapshotResult::EventType &&
+                ev->Recipient.NodeId() == delayedSessionNode) {
+            heldSnapshotReplies.push_back(std::move(ev));
+            return false;
         } else if (ev->GetTypeRewrite() == TEvSyncerLostDataRecovered::EventType) {
             recoveredNodes.insert(ev->Sender.NodeId());
         }
@@ -72,7 +105,8 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     };
 
     for (const auto& slot : baseConfig.GetVSlot()) {
-        if (slot.GetGroupId() == groups.front() && slot.GetFailRealmIdx() == lostRealm) {
+        if (slot.GetGroupId() == groups.front() && (slot.GetFailRealmIdx() == lostRealm ||
+                (scenario == ERecoveryScenario::TwoWipedRealms && slot.GetFailRealmIdx() == offlineRealm))) {
             const TVDiskID vdiskId(slot.GetGroupId(), slot.GetGroupGeneration(), slot.GetFailRealmIdx(),
                 slot.GetFailDomainIdx(), slot.GetVDiskIdx());
             const auto& location = slot.GetVSlotId();
@@ -85,10 +119,36 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false) {
     UNIT_ASSERT_VALUES_EQUAL(earlyFullSyncResponses != 0, emergencyMode);
 
     holdHealthyPeer = false;
+    if (holdSession) {
+        env.Sim(TDuration::Seconds(30));
+        UNIT_ASSERT_VALUES_EQUAL(recoveredNodes.size(), 1);
+        UNIT_ASSERT(recoveredNodes.contains(delayedSessionNode));
+        UNIT_ASSERT(!heldSnapshotReplies.empty());
+        holdSession = false;
+        for (auto& event : heldSnapshotReplies) {
+            env.Runtime->Send(event.release(), delayedSessionNode);
+        }
+    }
     env.Sim(TDuration::Minutes(2));
-    UNIT_ASSERT_VALUES_EQUAL(recoveredNodes.size(), emergencyMode ? 3 : 0);
+    UNIT_ASSERT_VALUES_EQUAL(recoveredNodes.size(), emergencyMode
+        ? (scenario == ERecoveryScenario::TwoWipedRealms ? 6 : 3) : 0);
 
     if (emergencyMode) {
+        for (ui32 i = 0; i < info->GetTotalVDisksNum(); ++i) {
+            const auto vdiskId = info->GetVDiskId(i);
+            if (vdiskId.FailRealm != lostRealm &&
+                    !(scenario == ERecoveryScenario::TwoWipedRealms && vdiskId.FailRealm == offlineRealm)) {
+                continue;
+            }
+            env.WithQueueId(vdiskId, NKikimrBlobStorage::EVDiskQueueId::GetFastRead, [&](TActorId queueId) {
+                const auto edge = env.Runtime->AllocateEdgeActor(queueId.NodeId());
+                env.Runtime->Send(new IEventHandle(queueId, edge,
+                    new TEvBlobStorage::TEvVGetBlock(blockedTablet, vdiskId, TInstant::Max())), edge.NodeId());
+                const auto reply = env.WaitForEdgeActorEvent<TEvBlobStorage::TEvVGetBlockResult>(edge);
+                UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetStatus(), NKikimrProto::OK);
+                UNIT_ASSERT_VALUES_EQUAL(reply->Get()->Record.GetGeneration(), blockedGeneration);
+            });
+        }
         TBlobStorageGroupInfo::TVDiskIds vdiskIds;
         TBlobStorageGroupInfo::TServiceIds serviceIds;
         info->PickSubgroup(id.Hash(), &vdiskIds, &serviceIds);
@@ -199,6 +259,18 @@ Y_UNIT_TEST_SUITE(EmergencyRecovery) {
 
     Y_UNIT_TEST(UnselectedPoolKeepsRecoveryBlockedUnorderedData) {
         TestLostDataRecovery(false, true);
+    }
+
+    Y_UNIT_TEST(TwoWipedRealmsWaitForPreservedMetadata) {
+        TestLostDataRecovery(true, false, ERecoveryScenario::TwoWipedRealms);
+    }
+
+    Y_UNIT_TEST(TwoWipedRealmsWaitForPreservedMetadataUnorderedData) {
+        TestLostDataRecovery(true, true, ERecoveryScenario::TwoWipedRealms);
+    }
+
+    Y_UNIT_TEST(UnorderedRequestSurvivesRecoveryCompletionWithoutTimeout) {
+        TestLostDataRecovery(true, true, ERecoveryScenario::DelayedUnorderedSession);
     }
 
     Y_UNIT_TEST(AutomaticDoNotKeepSuppressedAndGcPreserved) {

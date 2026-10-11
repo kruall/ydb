@@ -2036,8 +2036,9 @@ namespace NKikimr {
 
         void StartFullSyncHandler(const TActorContext& ctx, ui64 dbBirthLsn, bool recoveringLostData = false) {
             if (Db->SyncFullHandlerID) {
-                ctx.Send(Db->SyncFullHandlerID, new TEvents::TEvPoisonPill);
-                ActiveActors.Erase(Db->SyncFullHandlerID);
+                // Preserve accepted unordered requests and their snapshot until the session finishes.
+                ctx.Send(Db->SyncFullHandlerID, new TEvSyncGuidRecoveryDone(NKikimrProto::OK, dbBirthLsn));
+                return;
             }
             Db->SyncFullHandlerID.Set(ctx.RegisterWithSameMailbox(CreateHullSyncFullHandler(Db, HullCtx,
                 SelfVDiskId, ctx.SelfID, Db->SyncLogID, Hull, IFaceMonGroup, FullSyncGroup,
