@@ -71,10 +71,12 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false,
     bool wiping = true;
     bool holdHealthyPeer = true;
     bool holdSession = scenario == ERecoveryScenario::DelayedUnorderedSession;
-    std::vector<std::unique_ptr<IEventHandle>> heldSnapshotReplies;
+    using THeldEvents = std::vector<std::pair<ui32, std::unique_ptr<IEventHandle>>>;
+    THeldEvents heldFullSyncRequests;
+    THeldEvents heldSnapshotReplies;
     ui32 earlyFullSyncResponses = 0;
     std::set<ui32> recoveredNodes;
-    env.Runtime->FilterFunction = [&](ui32, std::unique_ptr<IEventHandle>& ev) {
+    env.Runtime->FilterFunction = [&](ui32 nodeId, std::unique_ptr<IEventHandle>& ev) {
         if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVSyncFull::EventType) {
             const auto& record = ev->Get<TEvBlobStorage::TEvVSyncFull>()->Record;
             const auto source = VDiskIDFromVDiskID(record.GetSourceVDiskID());
@@ -84,6 +86,10 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false,
             const bool delayedHealthyPeer = target.FailRealm == healthyRealm &&
                 (scenario == ERecoveryScenario::TwoWipedRealms || target.FailDomain == 0);
             if (recoveringSource && (wiping || (holdHealthyPeer && delayedHealthyPeer))) {
+                if (scenario == ERecoveryScenario::DelayedUnorderedSession) {
+                    // A disabled SyncJobTimeout cannot retry a dropped request. Delay it instead.
+                    heldFullSyncRequests.emplace_back(nodeId, std::move(ev));
+                }
                 return false;
             }
         } else if (ev->GetTypeRewrite() == TEvBlobStorage::TEvVSyncFullResult::EventType) {
@@ -96,12 +102,23 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false,
         } else if (holdSession && !wiping &&
                 ev->GetTypeRewrite() == NSyncLog::TEvPhantomFlagStorageGetSnapshotResult::EventType &&
                 ev->Recipient.NodeId() == delayedSessionNode) {
-            heldSnapshotReplies.push_back(std::move(ev));
-            return false;
+            const auto* recipient = env.Runtime->GetActor(ev->GetRecipientRewrite());
+            if (recipient && recipient->GetActivityType() ==
+                    NKikimrServices::TActivity::BS_HULL_SYNC_FULL_UNORDERED_DATA_PROTOCOL) {
+                heldSnapshotReplies.emplace_back(nodeId, std::move(ev));
+                return false;
+            }
         } else if (ev->GetTypeRewrite() == TEvSyncerLostDataRecovered::EventType) {
             recoveredNodes.insert(ev->Sender.NodeId());
         }
         return true;
+    };
+    auto releaseFullSyncRequests = [&] {
+        THeldEvents events;
+        events.swap(heldFullSyncRequests);
+        for (auto& [nodeId, event] : events) {
+            env.Runtime->Send(event.release(), nodeId);
+        }
     };
 
     for (const auto& slot : baseConfig.GetVSlot()) {
@@ -114,19 +131,21 @@ void TestLostDataRecovery(bool emergencyMode, bool unorderedData = false,
         }
     }
     wiping = false;
+    releaseFullSyncRequests();
     env.Sim(TDuration::Seconds(30));
     UNIT_ASSERT(recoveredNodes.empty()); // Even with early peer replies, every healthy-domain full sync is required.
     UNIT_ASSERT_VALUES_EQUAL(earlyFullSyncResponses != 0, emergencyMode);
 
     holdHealthyPeer = false;
+    releaseFullSyncRequests();
     if (holdSession) {
         env.Sim(TDuration::Seconds(30));
         UNIT_ASSERT_VALUES_EQUAL(recoveredNodes.size(), 1);
         UNIT_ASSERT(recoveredNodes.contains(delayedSessionNode));
         UNIT_ASSERT(!heldSnapshotReplies.empty());
         holdSession = false;
-        for (auto& event : heldSnapshotReplies) {
-            env.Runtime->Send(event.release(), delayedSessionNode);
+        for (auto& [nodeId, event] : heldSnapshotReplies) {
+            env.Runtime->Send(event.release(), nodeId);
         }
     }
     env.Sim(TDuration::Minutes(2));
