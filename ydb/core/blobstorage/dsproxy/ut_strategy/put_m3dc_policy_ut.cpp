@@ -9,7 +9,6 @@ using namespace NKikimr;
 namespace {
 
 using ESituation = TBlobState::ESituation;
-using ETarget = TPut3dcPolicyStrategy::ETarget;
 
 struct TFixture {
     TIntrusivePtr<TBlobStorageGroupInfo> Info = MakeIntrusive<TBlobStorageGroupInfo>(
@@ -22,7 +21,7 @@ struct TFixture {
     TFixture() {
         Info->WritePolicy.emplace();
         Info->WritePolicy->WriteOk = {{1, 1, 1}, {2, 2}};
-        Info->WritePolicy->WriteDurability = Info->WritePolicy->WriteOk;
+        Info->WritePolicy->WriteDurability = {{3, 3, 3}};
         Blackboard.AccelerationMode = TBlackboard::AccelerationModeSkipMarked;
         LogCtx.SuppressLog = true;
         Initial.Init(TLogoBlobID(1, 1, 1, 0, 1000, 0), *Info);
@@ -33,7 +32,7 @@ struct TFixture {
     }
 
     void Compare(const TBlobState& state, TEvBlobStorage::TEvPut::ETactic tactic, bool mod3x3,
-            ETarget target, bool accelerate) {
+            bool accelerate) {
         auto oldState = state;
         auto newState = state;
         TGroupDiskRequests oldRequests;
@@ -42,7 +41,7 @@ struct TFixture {
         TAcceleratePut3dcStrategy oldAccelerate(tactic, mod3x3);
         IStrategy& legacy = accelerate ? static_cast<IStrategy&>(oldAccelerate) : oldStrategy;
         const auto oldResult = legacy.Process(LogCtx, oldState, *Info, Blackboard, oldRequests, {});
-        TPut3dcPolicyStrategy strategy(tactic, mod3x3, target, accelerate);
+        TPut3dcPolicyStrategy strategy(tactic, mod3x3, accelerate);
         const auto result = strategy.Process(LogCtx, newState, *Info, Blackboard, newRequests, {});
         const auto context = [&] {
             return TStringBuilder() << "state# " << state.ToString()
@@ -67,8 +66,8 @@ struct TFixture {
         }
     }
 
-    EStrategyOutcome Run(TBlobState* state, ETarget target, TGroupDiskRequests* requests) {
-        TPut3dcPolicyStrategy strategy(TEvBlobStorage::TEvPut::TacticDefault, false, target);
+    EStrategyOutcome Run(TBlobState* state, TGroupDiskRequests* requests) {
+        TPut3dcPolicyStrategy strategy(TEvBlobStorage::TEvPut::TacticDefault, false);
         return strategy.Process(LogCtx, *state, *Info, Blackboard, *requests, {});
     }
 };
@@ -88,8 +87,11 @@ Y_UNIT_TEST_SUITE(DSProxyPut3dcPolicyTest) {
             }
             for (ui32 tactic = 0; tactic < TEvBlobStorage::TEvPut::TacticCount; ++tactic) {
                 for (bool mod3x3 : {false, true}) {
-                    for (auto target : {ETarget::WriteOk, ETarget::WriteDurability}) {
-                        f.Compare(state, static_cast<TEvBlobStorage::TEvPut::ETactic>(tactic), mod3x3, target, false);
+                    for (bool strictDurability : {false, true}) {
+                        f.Info->WritePolicy->WriteDurability = strictDurability
+                            ? TBlobStorageGroupInfo::TWritePolicy::TLayouts{{3, 3, 3}}
+                            : f.Info->WritePolicy->WriteOk;
+                        f.Compare(state, static_cast<TEvBlobStorage::TEvPut::ETactic>(tactic), mod3x3, false);
                     }
                 }
             }
@@ -127,7 +129,7 @@ Y_UNIT_TEST_SUITE(DSProxyPut3dcPolicyTest) {
                     for (bool mod3x3 : {false, true}) {
                         for (bool accelerate : {false, true}) {
                             f.Compare(state, static_cast<TEvBlobStorage::TEvPut::ETactic>(tactic), mod3x3,
-                                ETarget::WriteOk, accelerate);
+                                accelerate);
                         }
                     }
                 }
@@ -161,40 +163,47 @@ Y_UNIT_TEST_SUITE(DSProxyPut3dcPolicyTest) {
                 for (ui32 tactic = 0; tactic < TEvBlobStorage::TEvPut::TacticCount; ++tactic) {
                     for (bool mod3x3 : {false, true}) {
                         f.Compare(state, static_cast<TEvBlobStorage::TEvPut::ETactic>(tactic), mod3x3,
-                            ETarget::WriteOk, false);
+                            false);
                     }
                 }
             }
         }
     }
 
-    Y_UNIT_TEST(SeparateLayoutsAndTargets) {
+    Y_UNIT_TEST(WriteDurabilityDoesNotAffectPlacement) {
         TFixture f;
         f.Info->WritePolicy->WriteOk = {{1, 1, 1}};
-        f.Info->WritePolicy->WriteDurability = {{2, 2}};
+        f.Info->WritePolicy->WriteDurability = {{3, 3, 3}};
         auto state = f.Initial;
-        for (ui32 disk = 0; disk < 3; ++disk) {
-            state.Disks[disk].DiskParts[disk % 3].Situation = ESituation::Present;
-        }
         TGroupDiskRequests requests;
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::DONE);
-        UNIT_ASSERT(requests.PutsPending.empty());
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteDurability, &requests).Value == EStrategyOutcome::IN_PROGRESS);
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::IN_PROGRESS);
         UNIT_ASSERT_VALUES_EQUAL(requests.PutsPending.size(), 3);
         for (const auto& put : requests.PutsPending) {
             const ui32 subgroupIdx = f.Info->GetIdxInSubgroup(f.Info->GetVDiskId(put.OrderNumber), state.Id.Hash());
             UNIT_ASSERT(subgroupIdx < 9);
             UNIT_ASSERT_VALUES_EQUAL(put.Id.PartId() - 1, subgroupIdx % 3);
         }
-
-        // Two copies in A and B satisfy 2+2, but do not satisfy 1+1+1.
         state = f.Initial;
+        requests.PutsPending.clear();
+        for (ui32 disk = 0; disk < 3; ++disk) {
+            state.Disks[disk].DiskParts[disk % 3].Situation = ESituation::Present;
+        }
+        // WriteOk is sufficient even though WriteDurability still requires six copies.
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::DONE);
+        UNIT_ASSERT(requests.PutsPending.empty());
+
+        f.Info->WritePolicy->WriteOk = {{2, 2}};
+        f.Info->WritePolicy->WriteDurability = {{1, 1, 1}};
+        // Satisfying WriteDurability alone must not complete the client PUT.
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::IN_PROGRESS);
+        UNIT_ASSERT_VALUES_EQUAL(requests.PutsPending.size(), 3);
+        state = f.Initial;
+        requests.PutsPending.clear();
         for (ui32 disk : {0u, 1u, 3u, 4u}) {
             state.Disks[disk].DiskParts[disk % 3].Situation = ESituation::Present;
         }
-        requests.PutsPending.clear();
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteDurability, &requests).Value == EStrategyOutcome::DONE);
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::IN_PROGRESS);
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::DONE);
+        UNIT_ASSERT(requests.PutsPending.empty());
     }
 
     Y_UNIT_TEST(SentDoesNotSatisfyPolicy) {
@@ -204,7 +213,7 @@ Y_UNIT_TEST_SUITE(DSProxyPut3dcPolicyTest) {
             state.Disks[disk].DiskParts[disk % 3].Situation = ESituation::Sent;
         }
         TGroupDiskRequests requests;
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::IN_PROGRESS);
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::IN_PROGRESS);
         UNIT_ASSERT(requests.PutsPending.empty());
     }
 
@@ -216,10 +225,10 @@ Y_UNIT_TEST_SUITE(DSProxyPut3dcPolicyTest) {
             state.Disks[disk].DiskParts[0].Situation = ESituation::Error;
         }
         TGroupDiskRequests requests;
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::ERROR);
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::ERROR);
         UNIT_ASSERT(requests.PutsPending.empty());
         f.Info->WritePolicy->WriteOk = {{2, 2}};
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::IN_PROGRESS);
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::IN_PROGRESS);
         UNIT_ASSERT_VALUES_EQUAL(requests.PutsPending.size(), 4);
     }
 
@@ -230,11 +239,11 @@ Y_UNIT_TEST_SUITE(DSProxyPut3dcPolicyTest) {
         for (auto vdiskState : {TBlobStorageGroupInfo::EVDiskState::Excluded,
                 TBlobStorageGroupInfo::EVDiskState::Replicating}) {
             f.Info->VDiskStates = {{0, vdiskState}, {1, vdiskState}, {2, vdiskState}};
-            UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::ERROR);
+            UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::ERROR);
         }
         f.Info->VDiskStates.clear();
         f.Info->WritePolicy.reset();
-        UNIT_ASSERT(f.Run(&state, ETarget::WriteOk, &requests).Value == EStrategyOutcome::ERROR);
+        UNIT_ASSERT(f.Run(&state, &requests).Value == EStrategyOutcome::ERROR);
         UNIT_ASSERT(requests.PutsPending.empty());
     }
 }

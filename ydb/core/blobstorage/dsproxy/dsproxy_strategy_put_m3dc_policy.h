@@ -4,19 +4,12 @@
 
 namespace NKikimr {
 
-// A placement strategy only: acknowledging WriteOk before WriteDurability requires
-// a separate change to the PUT request's completion and lifetime handling.
+// DSProxy completes placement according to WriteOk. Subsequent replication to
+// WriteDurability belongs to VDisks and is independent of the client PUT.
 class TPut3dcPolicyStrategy : public TStrategyBase {
-public:
-    enum class ETarget {
-        WriteOk,
-        WriteDurability,
-    };
-
 private:
     const TEvBlobStorage::TEvPut::ETactic Tactic;
     const bool EnableRequestMod3x3ForMinLatecy;
-    const ETarget Target;
     const bool Accelerate;
 
     bool CheckLayout(const TBlobStorageGroupInfo& info,
@@ -27,9 +20,7 @@ private:
                 counts[realm] += disks[realm + domain * 3];
             }
         }
-        return Target == ETarget::WriteOk
-            ? info.WritePolicy->CheckWriteOk(std::move(counts))
-            : info.WritePolicy->CheckWriteDurability(std::move(counts));
+        return info.WritePolicy->CheckWriteOk(std::move(counts));
     }
 
     void PreparePlacement(const TBlobState& state, const TBlobStorageGroupInfo& info, bool degraded,
@@ -61,10 +52,9 @@ private:
 
 public:
     TPut3dcPolicyStrategy(TEvBlobStorage::TEvPut::ETactic tactic, bool enableRequestMod3x3ForMinLatecy,
-            ETarget target = ETarget::WriteOk, bool accelerate = false)
+            bool accelerate = false)
         : Tactic(tactic)
         , EnableRequestMod3x3ForMinLatecy(enableRequestMod3x3ForMinLatecy)
-        , Target(target)
         , Accelerate(accelerate)
     {}
 
